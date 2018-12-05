@@ -14,7 +14,7 @@
 #define STATE_ON            1
 #define STATE_OFF           0
 #define STATE_ALWAYS_OFF    99
-#define STATE_ALWAYS_ON     99
+#define STATE_ALWAYS_ON     100
 
 using namespace std;
 
@@ -129,11 +129,14 @@ int main(int argc, char *argv[])
     //set initial states
     int m_led_state = STATE_OFF;
     int m_air_pump_state = STATE_OFF;
+    int interval=1000;
     
-    //wait for the pi zero to be fully boot up
+    //command line to turn the led or the pump on. Only one be on
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-boot") == 0) { //autorun at boot up
+            //wait for the pi zero to be fully boot up
             delay_ms(2 * 60 * 1000);
+            interval=2000;
         }
         else if (strcmp(argv[i], "-led") == 0) {
             turn_led_on();
@@ -174,7 +177,7 @@ int main(int argc, char *argv[])
                 m_air_pump_state = STATE_OFF;
             }
         }
-        delay_ms(1000);
+        delay_ms(interval);
     }
     turn_led_off();
     turn_air_pump_off();
