@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <signal.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -31,6 +32,29 @@ static float temperature, humidity;//fahrenheit
 #define AF_DB7 (AF_BASE + 7)
 // Global lcd handle:
 static int lcdHandle;
+static bool done;
+
+void handle_signal(int signal) {
+    // Find out which signal we're handling
+    switch (signal) {
+		case SIGINT://key 3
+			done=true;
+			break;
+	}
+}
+
+void hook_signal() {
+	struct sigaction sa;
+	
+	// Setup the sighub handler
+    sa.sa_handler = &handle_signal;
+    // Restart the system call, if at all possible
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+		printf("Failed to capture sigint 1\n");
+	}
+}
+
 
 static bool init_lcd() {
     int i;
@@ -132,6 +156,9 @@ static bool read_dht11_dat()
 //gcc -o weather weather.c -lwiringPi -lwiringPiDev
 int main( void )
 {
+    done = false;
+    hook_signal();
+    
     wiringPiSetup();
     init_lcd();
     init_censor(); //temperature
@@ -140,7 +167,8 @@ int main( void )
     time_t rawtime ;
     char buffer[128] ;
 
-    while ( 1 ) {
+    int counter = 0;
+    while ( !done ) {
         //get current time
         rawtime = time (NULL) ;
         timeinfo = localtime(&rawtime) ;
@@ -148,11 +176,18 @@ int main( void )
         show_lcd(0, buffer);
         
         //temperature & humidity
-        if (read_dht11_dat()) {
-            sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
-            show_lcd(1, buffer);
+        if (--counter <= 0) {
+            if (read_dht11_dat()) {
+                sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
+                show_lcd(1, buffer);
+            }
+            counter = 5;//update every 5 seconds
         }
         delay( 1000 ); /* wait 1sec to refresh */
     }
+    
+    digitalWrite(AF_LED,0);
+	lcdClear(lcdHandle);
+
     return(0);
 }
