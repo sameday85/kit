@@ -1,37 +1,25 @@
 #include <wiringPi.h>
-#include <pcf8574.h>
-#include <lcd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
+#include "pi_lcd.h"
 
-#define bool 	int
-#define true 	1
-#define false 	0
 
 //censor
 #define MAXTIMINGS  85
 #define DHTPIN      15  
+
+#define STATE_TIME              0
+#define STATE_INDOOR            1 //displaying in door temperature
+#define STATE_OUTDOOR           2
+
+extern int frederick();
+
 int dht11_dat[5] = { 0, 0, 0, 0, 0 };
 static float temperature, humidity;//fahrenheit
-
-//lcd
-//PCF8574 Start I/O address
-//PCF8754 64+8
-#define AF_BASE 64
-#define AF_RS (AF_BASE + 0)
-#define AF_RW (AF_BASE + 1)
-#define AF_E (AF_BASE + 2)
-#define AF_LED (AF_BASE + 3)
-#define AF_DB4 (AF_BASE + 4)
-#define AF_DB5 (AF_BASE + 5)
-#define AF_DB6 (AF_BASE + 6)
-#define AF_DB7 (AF_BASE + 7)
-// Global lcd handle:
-static int lcdHandle;
 static bool done;
 
 void handle_signal(int signal) {
@@ -55,30 +43,6 @@ void hook_signal() {
 	}
 }
 
-
-static bool init_lcd() {
-    int i;
-    pcf8574Setup(AF_BASE,0x3F);
-    lcdHandle = lcdInit (2, 16, 4, AF_RS, AF_E, AF_DB4,AF_DB5,AF_DB6,AF_DB7, 0,0,0,0) ;
-    if (lcdHandle < 0)
-        return false;
-    
-    for(i=0;i<8;i++)
-        pinMode(AF_BASE+i,OUTPUT); 	//Will expand the IO port as the output mode
-    digitalWrite(AF_LED,1); 	//Open back light
-    digitalWrite(AF_RW,0); 		//Set the R/Wall to a low level, LCD for the write state
-    lcdClear(lcdHandle); 		//Clear display
-
-    return true;
-}
-
-static void show_lcd (int line, const char *msg) {
-    if (lcdHandle < 0)
-        return;
-    
-    lcdPosition(lcdHandle,0,line);
-    lcdPuts(lcdHandle, msg);
-}
 
 static bool init_censor() {
     temperature = 0;
@@ -153,7 +117,7 @@ static bool read_dht11_dat()
     
 }
 
-//gcc -o weather weather.c -lwiringPi -lwiringPiDev
+//gcc -o weather ../weather.c ../pi_lcd.c ../yahoo.c -lwiringPi -lwiringPiDev -lssl -lcrypto
 int main( void )
 {
     done = false;
@@ -168,26 +132,45 @@ int main( void )
     char buffer[128] ;
 
     int counter = 0;
+    int states[] = {STATE_TIME, STATE_TIME, STATE_TIME, STATE_TIME, STATE_TIME, STATE_INDOOR, STATE_OUTDOOR};
+    int pos = 0;
     while ( !done ) {
-        //get current time
-        rawtime = time (NULL) ;
-        timeinfo = localtime(&rawtime) ;
-        strftime(buffer,sizeof (buffer),"%H:%M:%S %a",timeinfo);
-        show_lcd(0, buffer);
-        
-        //temperature & humidity
-        if (--counter <= 0) {
-            if (read_dht11_dat()) {
-                sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
-                show_lcd(1, buffer);
-            }
-            counter = 5;//update every 5 seconds
+        switch (states[pos]) {
+            case STATE_TIME: {
+                //get current time
+                rawtime = time (NULL) ;
+                timeinfo = localtime(&rawtime) ;
+                strftime(buffer,sizeof (buffer),"%H:%M:%S %a",timeinfo);
+                show_lcd_center(0, "NOW");
+                show_lcd_center(1, buffer);
+                counter = 5;
+                }
+                break;
+            case STATE_INDOOR:
+                if (read_dht11_dat()) {
+                    sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
+                    show_lcd_center(0, "HOME");
+                    show_lcd_center(1, buffer);
+                    
+                    delay(4000);
+                }
+                break;
+            case STATE_OUTDOOR: {
+                    int temperature = frederick();
+                    if (temperature >= 0) {
+                        sprintf(buffer, "%dF", temperature);
+                        show_lcd_center(0, "FREDERICK");
+                        show_lcd_center(1, buffer);
+                        delay(4000);
+                    }
+                }
+                break;
         }
-        delay( 1000 ); /* wait 1sec to refresh */
+        pos = (pos + 1) % (sizeof (states) / sizeof (int));
+        delay(1000); /* wait 1sec to refresh */
     }
     
-    digitalWrite(AF_LED,0);
-	lcdClear(lcdHandle);
+	deinit_lcd();
 
     return(0);
 }

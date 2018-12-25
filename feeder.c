@@ -160,7 +160,7 @@ void* timer_raw(void *arg) {
 	return NULL;
 }
 
-//gcc -o feeder feeder.c pi_lcd.c -lpthread -lwiringPi -lwiringPiDev -lm
+//gcc -o feeder ../feeder.c ../pi_lcd.c -lpthread -lwiringPi -lwiringPiDev -lm
 int main(int argc, char *argv[]) 
 {
 	int counter;
