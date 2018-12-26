@@ -12,53 +12,46 @@
 #define MAXTIMINGS  85
 #define DHTPIN      15  
 
-#define STATE_TIME              0
-#define STATE_INDOOR            1 //displaying in door temperature
-#define STATE_OUTDOOR           2
-
-extern int frederick();
+extern bool frederick(float *temperature);
 
 int dht11_dat[5] = { 0, 0, 0, 0, 0 };
-static float temperature, humidity;//fahrenheit
 static bool done;
 
 void handle_signal(int signal) {
     // Find out which signal we're handling
     switch (signal) {
-		case SIGINT://key 3
-			done=true;
-			break;
-	}
+        case SIGINT://key 3
+            done=true;
+            break;
+    }
 }
 
 void hook_signal() {
-	struct sigaction sa;
-	
-	// Setup the sighub handler
+    struct sigaction sa;
+    
+    // Setup the sighub handler
     sa.sa_handler = &handle_signal;
     // Restart the system call, if at all possible
     sa.sa_flags = SA_RESTART;
     if (sigaction(SIGINT, &sa, NULL) == -1) {
-		printf("Failed to capture sigint 1\n");
-	}
+        printf("Failed to capture sigint 1\n");
+    }
 }
 
 
 static bool init_censor() {
-    temperature = 0;
-    humidity    = 0;
-    
+   
     return true;
 }
 
-static bool read_dht11_dat()
+static bool read_dht11_dat(float *temperature, float *humidity) //fahrenheit
 {
     uint8_t laststate   = HIGH;
     uint8_t counter     = 0;
     uint8_t j       = 0, i;
     
-    temperature = 0;
-    humidity    = 0;
+    *temperature = 0;
+    *humidity    = 0;
 
     dht11_dat[0] = dht11_dat[1] = dht11_dat[2] = dht11_dat[3] = dht11_dat[4] = 0;
 
@@ -86,7 +79,7 @@ static bool read_dht11_dat()
             }
         }
         laststate = digitalRead( DHTPIN );
-    	delayMicroseconds( 12 );
+        delayMicroseconds( 12 );
 
         if ( counter == 255 )
             break;
@@ -107,8 +100,8 @@ static bool read_dht11_dat()
      * print it out if data is good
      */
     if ( (j >= 40) && (dht11_dat[4] == ( (dht11_dat[0] + dht11_dat[1] + dht11_dat[2] + dht11_dat[3]) & 0xFF) ) ) {
-        temperature = (dht11_dat[2] + dht11_dat[3] / 10.)  * 9. / 5. + 32;
-        humidity = dht11_dat[0] + dht11_dat[1] / 10.;
+        *temperature = (dht11_dat[2] + dht11_dat[3] / 10.)  * 9. / 5. + 32;
+        *humidity = dht11_dat[0] + dht11_dat[1] / 10.;
         
         return true;
     }
@@ -120,6 +113,7 @@ static bool read_dht11_dat()
 //gcc -o weather ../weather.c ../pi_lcd.c ../yahoo.c -lwiringPi -lwiringPiDev -lssl -lcrypto
 int main( void )
 {
+    float temperature, humidity;
     done = false;
     hook_signal();
     
@@ -131,46 +125,37 @@ int main( void )
     time_t rawtime ;
     char buffer[128] ;
 
-    int counter = 0;
-    int states[] = {STATE_TIME, STATE_TIME, STATE_TIME, STATE_TIME, STATE_TIME, STATE_INDOOR, STATE_OUTDOOR};
-    int pos = 0;
     while ( !done ) {
-        switch (states[pos]) {
-            case STATE_TIME: {
-                //get current time
-                rawtime = time (NULL) ;
-                timeinfo = localtime(&rawtime) ;
-                strftime(buffer,sizeof (buffer),"%H:%M:%S %a",timeinfo);
-                show_lcd_center(0, "NOW");
-                show_lcd_center(1, buffer);
-                counter = 5;
-                }
-                break;
-            case STATE_INDOOR:
-                if (read_dht11_dat()) {
-                    sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
-                    show_lcd_center(0, "HOME");
-                    show_lcd_center(1, buffer);
-                    
-                    delay(4000);
-                }
-                break;
-            case STATE_OUTDOOR: {
-                    int temperature = frederick();
-                    if (temperature >= 0) {
-                        sprintf(buffer, "%dF", temperature);
-                        show_lcd_center(0, "FREDERICK");
-                        show_lcd_center(1, buffer);
-                        delay(4000);
-                    }
-                }
-                break;
+        //current time
+        for (int i = 0; i < 5 && !done; ++i) {
+            //get current time
+            rawtime = time (NULL) ;
+            timeinfo = localtime(&rawtime) ;
+            strftime(buffer,sizeof (buffer),"%H:%M:%S %a",timeinfo);
+            show_lcd_center(0, "NOW");
+            show_lcd_center(1, buffer);
+            delay(1000); /* wait 1sec to refresh */
         }
-        pos = (pos + 1) % (sizeof (states) / sizeof (int));
-        delay(1000); /* wait 1sec to refresh */
+        //in door temperature
+        if (!done && read_dht11_dat(&temperature, &humidity)) {
+            sprintf(buffer, "%.1fF / %.1f%%", temperature, humidity);
+            show_lcd_center(0, "HOME");
+            show_lcd_center(1, buffer);
+            for (int i = 0; i < 5 && !done; ++i)
+                delay(1000);
+        }
+        //out door temperature
+        if (!done && frederick(&temperature)) {
+            sprintf(buffer, "%.0fF", temperature);
+            show_lcd_center(0, "FREDERICK");
+            show_lcd_center(1, buffer);
+            
+            for (int i = 0; i < 5 && !done; ++i)
+                delay(1000);
+        }
     }
     
-	deinit_lcd();
+    deinit_lcd();
 
     return(0);
 }

@@ -31,6 +31,7 @@
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include "common.h"
 
 #define FAIL    -1
 
@@ -68,10 +69,10 @@ SSL_CTX* InitCTX(void)
 {   SSL_METHOD *method;
     SSL_CTX *ctx;
 
-    OpenSSL_add_all_algorithms();		/* Load cryptos, et.al. */
-    SSL_load_error_strings();			/* Bring in and register error messages */
-    method = TLSv1_2_client_method();		/* Create new client-method instance */
-    ctx = SSL_CTX_new(method);			/* Create new context */
+    OpenSSL_add_all_algorithms();       /* Load cryptos, et.al. */
+    SSL_load_error_strings();           /* Bring in and register error messages */
+    method = TLSv1_2_client_method();       /* Create new client-method instance */
+    ctx = SSL_CTX_new(method);          /* Create new context */
     if ( ctx == NULL )
     {
         ERR_print_errors_fp(stderr);
@@ -87,17 +88,17 @@ void ShowCerts(SSL* ssl)
 {   X509 *cert;
     char *line;
 
-    cert = SSL_get_peer_certificate(ssl);	/* get the server's certificate */
+    cert = SSL_get_peer_certificate(ssl);   /* get the server's certificate */
     if ( cert != NULL )
     {
         printf("Server certificates:\n");
         line = X509_NAME_oneline(X509_get_subject_name(cert), 0, 0);
         printf("Subject: %s\n", line);
-        free(line);							/* free the malloc'ed string */
+        free(line);                         /* free the malloc'ed string */
         line = X509_NAME_oneline(X509_get_issuer_name(cert), 0, 0);
         printf("Issuer: %s\n", line);
-        free(line);							/* free the malloc'ed string */
-        X509_free(cert);					/* free the malloc'ed certificate copy */
+        free(line);                         /* free the malloc'ed string */
+        X509_free(cert);                    /* free the malloc'ed certificate copy */
     }
     else
         printf("No certificates.\n");
@@ -112,7 +113,7 @@ void ShowCerts(SSL* ssl)
 //https://github.com/mrwicks/miscellaneous/blob/master/tls_1.2_example/client.c
 //https://www.yahoo.com/news/weather/united-states/maryland/frederick-12519814
 //gcc -Wall -o ssl_client ssl_client.c -L/usr/lib -lssl -lcrypto
-int frederick() {   
+bool frederick(float *out_temperature) {   
     SSL_CTX *ctx;
     int server;
     SSL *ssl;
@@ -120,26 +121,26 @@ int frederick() {
     int bytes;
     char *hostname, *portnum;
 
-    int temperature = -1;
+    int temperature = -999;
     
-	hostname="www.yahoo.com";
-	portnum="443";
+    hostname="www.yahoo.com";
+    portnum="443";
     char *tag = "<span class=\"Va(t)\" data-reactid=\"33\">";
 
     ctx = InitCTX();
     server = OpenConnection(hostname, atoi(portnum));
-    ssl = SSL_new(ctx);						/* create new SSL connection state */
-    SSL_set_fd(ssl, server);				/* attach the socket descriptor */
-    if ( SSL_connect(ssl) == FAIL )			/* perform the connection */
+    ssl = SSL_new(ctx);                     /* create new SSL connection state */
+    SSL_set_fd(ssl, server);                /* attach the socket descriptor */
+    if ( SSL_connect(ssl) == FAIL )         /* perform the connection */
         ERR_print_errors_fp(stderr);
     else
     {   char *msg = "GET /news/weather/united-states/maryland/frederick-2372860 HTTP/1.1\r\nHost: www.yahoo.com\r\nAccept: text/plain, text/html, text/*\r\nUser-Agent: Mozilla/5.0 (iPad; CPU OS 6_0_1 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Mobile/10A523\r\nAccept-Language: en-us\r\n\r\n";
 
         //printf("Connected with %s encryption\n", SSL_get_cipher(ssl));
-        //ShowCerts(ssl);								/* get any certs */
-        SSL_write(ssl, msg, strlen(msg));			/* encrypt & send message */
+        //ShowCerts(ssl);                               /* get any certs */
+        SSL_write(ssl, msg, strlen(msg));           /* encrypt & send message */
         //this is chunked-encoding
-        bytes = SSL_read(ssl, buf, sizeof(buf));	/* get reply & decrypt */
+        bytes = SSL_read(ssl, buf, sizeof(buf));    /* get reply & decrypt */
         while (bytes > 0) {
             buf[bytes] = '\0';
             /*
@@ -159,12 +160,13 @@ int frederick() {
                 
                 break;
             }
-            bytes = SSL_read(ssl, buf, sizeof(buf));	/* get reply & decrypt */
+            bytes = SSL_read(ssl, buf, sizeof(buf));    /* get reply & decrypt */
         }
-        SSL_free(ssl);								/* release connection state */
+        SSL_free(ssl);                              /* release connection state */
     }
-    close(server);									/* close socket */
-    SSL_CTX_free(ctx);								/* release context */
+    close(server);                                  /* close socket */
+    SSL_CTX_free(ctx);                              /* release context */
     
-    return temperature;
+    *out_temperature = temperature;
+    return temperature > -999;
 }
