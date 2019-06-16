@@ -20,6 +20,7 @@
 
 #define PIN_LED		10
 #define PIN_BTN		29
+#define PIN_BUZZER	16
 
 #define ONE_WAY_STEPS	260
 #define DURATION_MS		10
@@ -160,7 +161,7 @@ void* timer_raw(void *arg) {
 	return NULL;
 }
 
-//gcc -o feeder ../feeder.c ../pi_lcd.c -lpthread -lwiringPi -lwiringPiDev -lm
+//gcc -o feeder feeder.c pi_lcd.c -lpthread -lwiringPi -lwiringPiDev -lm
 int main(int argc, char *argv[]) 
 {
 	int counter;
@@ -190,6 +191,7 @@ int main(int argc, char *argv[])
 	
 	pinMode(PIN_BTN, INPUT);
 	pinMode(PIN_LED, OUTPUT);
+    pinMode(PIN_BUZZER, OUTPUT);
     
     g_led_is_on = false;
 
@@ -216,6 +218,10 @@ int main(int argc, char *argv[])
     while (!done) {
         if ((demo_mode && !paused) || should_feed_now()) {
             feeding = true;
+            digitalWrite(PIN_BUZZER, HIGH);
+            delayMS(2000);
+            digitalWrite(PIN_BUZZER, LOW);
+            
             for (int i = 0; i < ONE_WAY_STEPS; i++) {
                 rotate(pins, CLOCKWISE);
             }
@@ -291,7 +297,7 @@ bool should_feed_now() {
 	rawtime = time (NULL) ;
 	timeinfo = localtime(&rawtime);
 	
-	bool its_time = (timeinfo->tm_hour == TIME_HOUR_FEED) && (timeinfo->tm_min < 10);
+	bool its_time = (timeinfo->tm_hour == TIME_HOUR_FEED) && (timeinfo->tm_min >=5) && (timeinfo->tm_min < 10);
 	if (!its_time) {
 		feeded_today = false;
 	}
