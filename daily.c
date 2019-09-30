@@ -33,25 +33,22 @@
 
 #define TIMER_IDLE              0
 #define TIMER_TV                1
-#define TIMER_TV_TIMEOUT        2
+#define TIMER_TV_TIMEOUT_       2
 #define TIMER_LEARNING          3
-#define TIMER_LEARNING_TIMEOUT  4
+#define TIMER_LEARNING_TIMEOUT_ 4
 #define TIMER_BREAK             5
-#define TIMER_BREAK_TIMEOUT     6
+#define TIMER_BREAK_TIMEOUT_    6
 
 #define DURATION_TV             15 //minutes
 #define DURATION_LEARNING       15 //minutes
 #define DURATION_BREAK          5  //minutes
-#define DURATION_BEEP           20  //seconds
+#define DURATION_BEEP           20 //seconds
 
 #ifndef bool
 #define bool    int
 #define true    1
 #define false   0
 #endif
-
-
-void delay_ms(int x);
 
 static bool done = false, buzzer_on = false;
 static int keys[MAX_KEY_BUFF], tail, header;
@@ -113,6 +110,42 @@ void beep() {
     turn_off_buzzer();
 }
 
+void log_event(int event, long long elapsed_ms) {
+    int elapsed_minutes = elapsed_ms / 1000 / 60;
+
+    char description[255];
+    switch (event) {
+        case TIMER_TV:
+        strcpy (description, "Started watching TV");
+        break;
+        case TIMER_TV_TIMEOUT_:
+        sprintf(description, "Finished watching TV. %d minutes", elapsed_minutes);
+        break;
+        case TIMER_LEARNING:
+        strcpy (description, "Started learning");
+        break;
+        case TIMER_LEARNING_TIMEOUT_:
+        sprintf(description, "Finished learning. %d minutes", elapsed_minutes);
+        break;
+        default:
+        sprintf(description, "Unknown event: %d", event);
+        break;
+    }
+
+    char buffer[1024];
+    struct tm *timeinfo ;
+    time_t rawtime ;
+    rawtime = time (NULL) ;
+    timeinfo = localtime(&rawtime);
+    sprintf (buffer, "[%02d/%02d %02d:%02d:%02d]%s", timeinfo->tm_mon+1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, description);
+
+    FILE *pFile = fopen("/var/www/html/album/daily.html", "a");
+    if (pFile) {
+        fprintf(pFile, "%s<br>", buffer);
+        fclose(pFile);
+    }
+}
+
 void generate_one_key(int event) {
     keys[tail]=event;
     tail = (tail + 1) % MAX_KEY_BUFF;
@@ -155,8 +188,13 @@ void* btn_monitor(void *arg) {
 //gcc -o daily daily.c -lpthread -lwiringPi -lwiringPiDev -lm
 int main(int argc, char *argv[]) 
 {
-	hook_signal();
+    bool on_boot = false;
+	for (int i = 1; i < argc; ++i) {
+		if (strcmp (argv[i], "-boot") == 0)
+			on_boot = true;
+	}
     
+	hook_signal();
     wiringPiSetup();
     pinMode(PIN_BTN1, INPUT);
     pinMode(PIN_BTN2, INPUT);
@@ -166,115 +204,138 @@ int main(int argc, char *argv[])
     pinMode(PIN_LED_G, OUTPUT);
     pinMode(PIN_LED_Y, OUTPUT);
     
-    turn_off_all_leds();
     turn_off_buzzer();
+    if (on_boot) {
+        digitalWrite(PIN_LED_R, HIGH);
+        digitalWrite(PIN_LED_G, HIGH);
+        digitalWrite(PIN_LED_Y, HIGH);
+
+        delay(30 * 1000);//30 seconds
+    }   
+    turn_off_all_leds();
     
-    int timer_state = TIMER_IDLE;
-    
+    int timer_state = TIMER_IDLE, timer_sub_state = 0;
+    header = tail = 0;
+
     pthread_t thread_btn;
     pthread_create(&thread_btn, NULL, btn_monitor, NULL);
     
-    unsigned long long timeout_at = 0, now = 0;
-    unsigned long long counter = 0;
-    bool beep_on = false;
+    unsigned long long start_at, timeout_at = 0, now = 0;
+    int counter = 0;
     while (!done) {
         int key_event = 0;
         if (header != tail) {
             key_event = keys[header];
             header = (header + 1) % MAX_KEY_BUFF;
         }
+        now = get_current_time();
         //hard reset
         if (key_event == KEY_BTN1_LONG_PRESSED || 
                 key_event == KEY_BTN2_LONG_PRESSED ||
                     key_event == KEY_BTN3_LONG_PRESSED) {
+            if (timer_state == TIMER_TV) {
+                log_event(TIMER_TV_TIMEOUT_, now - start_at);
+            }
+            else if (timer_state == TIMER_LEARNING) {
+                log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
+            }
             turn_off_all_leds();
             turn_off_buzzer();
             timer_state = TIMER_IDLE;
+            timer_sub_state = 0;
             key_event = 0;
         }
-        now = get_current_time();
         switch (timer_state) {
             case TIMER_IDLE:
+                if (timer_sub_state) {
+                    if ((key_event == KEY_BTN1_PRESSED && timer_sub_state == TIMER_TV_TIMEOUT_) ||
+                            (key_event == KEY_BTN2_PRESSED && timer_sub_state == TIMER_LEARNING_TIMEOUT_) ||
+                                (key_event == KEY_BTN3_PRESSED && timer_sub_state == TIMER_BREAK_TIMEOUT_)) {
+                        timer_sub_state = 0;
+                        turn_off_all_leds();
+                        turn_off_buzzer();
+
+                        key_event = 0;
+                    }
+                    if (timer_sub_state && (now >= timeout_at)) {
+                        timer_sub_state = 0;
+                        turn_off_all_leds();
+                        turn_off_buzzer();
+                    }
+                }
                 if (key_event == KEY_BTN1_PRESSED) {//tv time
                     timer_state = TIMER_TV;
-                    timeout_at = get_current_time() + DURATION_TV * 60 * 1000;
+                    timer_sub_state = 0;
+                    start_at = now;
+                    timeout_at = now + DURATION_TV * 60 * 1000;
                     counter = 0;
                     turn_off_all_leds();
+                    turn_off_buzzer();
                     digitalWrite(PIN_LED_R, HIGH);
+                    log_event(TIMER_TV, 0);
                 }
                 else if (key_event == KEY_BTN2_PRESSED) {//learning time
                     timer_state = TIMER_LEARNING;
-                    timeout_at = get_current_time() + DURATION_LEARNING * 60 * 1000;
+                    timer_sub_state = 0;
+                    start_at = now;
+                    timeout_at = now + DURATION_LEARNING * 60 * 1000;
                     counter = 0;
                     turn_off_all_leds();
+                    turn_off_buzzer();
                     digitalWrite(PIN_LED_G, HIGH);
+                    log_event(TIMER_LEARNING, 0);
                 }
                 else if (key_event == KEY_BTN3_PRESSED) {//break time
                     timer_state = TIMER_BREAK;
-                    timeout_at = get_current_time() + DURATION_BREAK * 60 * 1000;
-                    counter = 0;
+                    timer_sub_state = 0;
+                    start_at = now;
+                    timeout_at = now + DURATION_BREAK * 60 * 1000;
+                    counter= 0;
                     turn_off_all_leds();
+                    turn_off_buzzer();
                     digitalWrite(PIN_LED_Y, HIGH);
                 }
                 break;
             case TIMER_TV:
                 if (now >= timeout_at) {
-                    timer_state = TIMER_TV_TIMEOUT;
+                    timer_state = TIMER_IDLE;
+                    timer_sub_state = TIMER_TV_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_R, HIGH); //R always on
                     turn_on_buzzer(); //buzzer on
                     counter = 0;
-                    beep_on = true;
+                    log_event(TIMER_TV_TIMEOUT_, now - start_at);
                 }
                 else {
                     digitalWrite(PIN_LED_R, (counter & 1) ? LOW: HIGH);
                 }
                 break;
-            case TIMER_TV_TIMEOUT:
-                if (now >= timeout_at) {
-                    turn_off_buzzer(); //stop beeping, R led is still on
-                    timer_state = TIMER_IDLE;
-                }
-                break;
             case TIMER_LEARNING:
                 if (now >= timeout_at) {
-                    timer_state = TIMER_LEARNING_TIMEOUT;
+                    timer_state = TIMER_IDLE;
+                    timer_sub_state = TIMER_LEARNING_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_G, HIGH); //G always on
                     turn_on_buzzer(); //buzzer on
                     counter = 0;
-                    beep_on = true;
+                    log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
                 }
                 else {
                     digitalWrite(PIN_LED_G, (counter & 1) ? LOW: HIGH);
                 }
                 break;
-            case TIMER_LEARNING_TIMEOUT:
-                now = get_current_time();
-                if (now >= timeout_at) {
-                    turn_off_buzzer(); //stop beeping, G led is still on
-                    timer_state = TIMER_IDLE;
-                }
-                break;
             case TIMER_BREAK:
                 now = get_current_time();
                 if (now >= timeout_at) {
-                    timer_state = TIMER_BREAK_TIMEOUT;
+                    timer_state = TIMER_IDLE;
+                    timer_sub_state = TIMER_BREAK_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_Y, HIGH); //Y always on
                     turn_on_buzzer(); //buzzer on
                     counter = 0;
-                    beep_on = true;
                 }
                 else {
                     digitalWrite(PIN_LED_Y, (counter & 1) ? LOW: HIGH);
-                }
-                break;
-            case TIMER_BREAK_TIMEOUT:
-                now = get_current_time();
-                if (now >= timeout_at) {
-                    turn_off_buzzer(); //stop beeping, Y led is still on
-                    timer_state = TIMER_IDLE;
                 }
                 break;
         }
