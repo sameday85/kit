@@ -31,6 +31,7 @@
 void delayMS(int x);
 void rotate(int* pins, int direction);
 void turn_off_motor(int *pins);
+void buzzle();
 bool should_feed_now();
 
 bool feeded_today;
@@ -218,9 +219,7 @@ int main(int argc, char *argv[])
     while (!done) {
         if ((demo_mode && !paused) || should_feed_now()) {
             feeding = true;
-            digitalWrite(PIN_BUZZER, HIGH);
-            delayMS(2000);
-            digitalWrite(PIN_BUZZER, LOW);
+            buzzle();
             
             for (int i = 0; i < ONE_WAY_STEPS; i++) {
                 rotate(pins, CLOCKWISE);
@@ -304,4 +303,14 @@ bool should_feed_now() {
 	return its_time && !feeded_today;
 }
 
-
+//make a long buzzle
+void buzzle () {
+    int duration = 2000;
+    for(int i=0;i<(duration/2);i++) { 
+        digitalWrite(PIN_BUZZER,HIGH);// sound 
+        delayMS(1);//delay1ms 
+        digitalWrite(PIN_BUZZER,LOW);//not sound 
+        delayMS(1);//ms delay
+    }
+    digitalWrite(PIN_BUZZER, LOW);
+}
