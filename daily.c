@@ -38,6 +38,7 @@
 #define TIMER_LEARNING_TIMEOUT_ 4
 #define TIMER_BREAK             5
 #define TIMER_BREAK_TIMEOUT_    6
+#define TIMER_HARD_RESET        99
 
 #define DURATION_TV             15 //minutes
 #define DURATION_LEARNING       15 //minutes
@@ -51,6 +52,7 @@
 #endif
 
 static bool done = false, buzzer_on = false;
+static int cadence;
 static int keys[MAX_KEY_BUFF], tail, header;
 
 void handle_signal(int signal) {
@@ -93,25 +95,27 @@ void turn_off_all_leds() {
 
 void turn_on_buzzer() {
     digitalWrite(PIN_BUZZER, HIGH);
+    cadence = 0;
     buzzer_on = true;
 }
 
 void turn_off_buzzer() {
-    digitalWrite(PIN_BUZZER, LOW);
     buzzer_on = false;
+    digitalWrite(PIN_BUZZER, LOW);
 }
 
 void beep() {
     if (buzzer_on)
         return;
 
-    turn_on_buzzer();
+    digitalWrite(PIN_BUZZER, HIGH);
     delay_ms(100);
-    turn_off_buzzer();
+    digitalWrite(PIN_BUZZER,LOW);
 }
 
 void log_event(int event, long long elapsed_ms) {
     int elapsed_minutes = elapsed_ms / 1000 / 60;
+    int elapsed_seconds = (elapsed_ms / 1000) % 60;
 
     char description[255];
     switch (event) {
@@ -119,13 +123,22 @@ void log_event(int event, long long elapsed_ms) {
         strcpy (description, "Started watching TV");
         break;
         case TIMER_TV_TIMEOUT_:
-        sprintf(description, "Finished watching TV. %d minutes", elapsed_minutes);
+        sprintf(description, "Finished watching TV. %02d:%02", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_LEARNING:
         strcpy (description, "Started learning");
         break;
         case TIMER_LEARNING_TIMEOUT_:
-        sprintf(description, "Finished learning. %d minutes", elapsed_minutes);
+        sprintf(description, "Finished learning. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        break;
+        case TIMER_BREAK:
+        strcpy (description, "Break time");
+        break;
+        case TIMER_BREAK_TIMEOUT_:
+        sprintf(description, "Break timed out. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        break;
+        case TIMER_HARD_RESET:
+        strcpy(description, "Hard reset");
         break;
         default:
         sprintf(description, "Unknown event: %d", event);
@@ -152,8 +165,9 @@ void generate_one_key(int event) {
     beep();
 }
 
-void* btn_monitor(void *arg) {
+void* timer_daemon(void *arg) {
     tail = header = 0; //the buffer is empty
+    int delay = 200, steps = 2000 / delay; //every two seconds
     int btn_states[]={BTN_LOW, BTN_LOW, BTN_LOW};
     int btn_pins[]={PIN_BTN1,PIN_BTN2,PIN_BTN3};
     
@@ -180,7 +194,16 @@ void* btn_monitor(void *arg) {
                 btn_states[i] = BTN_LOW;
             }
         }
-        delay_ms(200);
+        if (buzzer_on) {
+            if (cadence == steps/2) {
+                digitalWrite (PIN_BUZZER, LOW);
+            }
+            else if (cadence == 0) {
+                digitalWrite (PIN_BUZZER, HIGH);
+            }
+            cadence = (cadence + 1) % steps;
+        }
+        delay_ms(delay);
 	}
 	return NULL;
 }
@@ -216,10 +239,11 @@ int main(int argc, char *argv[])
     
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
-
-    pthread_t thread_btn;
-    pthread_create(&thread_btn, NULL, btn_monitor, NULL);
     
+
+    pthread_t thread_daemon;
+    pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
+
     unsigned long long start_at, timeout_at = 0, now = 0;
     int counter = 0;
     while (!done) {
@@ -233,11 +257,15 @@ int main(int argc, char *argv[])
         if (key_event == KEY_BTN1_LONG_PRESSED || 
                 key_event == KEY_BTN2_LONG_PRESSED ||
                     key_event == KEY_BTN3_LONG_PRESSED) {
+            log_event(TIMER_HARD_RESET, 0);
             if (timer_state == TIMER_TV) {
                 log_event(TIMER_TV_TIMEOUT_, now - start_at);
             }
             else if (timer_state == TIMER_LEARNING) {
                 log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
+            }
+            else if (timer_state == TIMER_BREAK) {
+                log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
             }
             turn_off_all_leds();
             turn_off_buzzer();
@@ -294,6 +322,7 @@ int main(int argc, char *argv[])
                     turn_off_all_leds();
                     turn_off_buzzer();
                     digitalWrite(PIN_LED_Y, HIGH);
+                    log_event(TIMER_BREAK, 0);
                 }
                 break;
             case TIMER_TV:
@@ -333,6 +362,7 @@ int main(int argc, char *argv[])
                     digitalWrite(PIN_LED_Y, HIGH); //Y always on
                     turn_on_buzzer(); //buzzer on
                     counter = 0;
+                    log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
                 }
                 else {
                     digitalWrite(PIN_LED_Y, (counter & 1) ? LOW: HIGH);
@@ -345,7 +375,7 @@ int main(int argc, char *argv[])
     turn_off_all_leds();
     turn_off_buzzer();
     
-    pthread_join(thread_btn, NULL);
+    pthread_join(thread_daemon, NULL);
 	return 0;
 }
 
