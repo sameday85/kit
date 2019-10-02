@@ -58,7 +58,7 @@
 #endif
 
 static bool done = false, buzzer_on = false;
-static int cadence;
+static int cadence, beeps;
 static int keys[MAX_KEY_BUFF], tail, header;
 
 void handle_signal(int signal) {
@@ -99,10 +99,11 @@ void turn_off_all_leds() {
     digitalWrite(PIN_LED_Y, LOW);
 }
 
-void turn_on_buzzer() {
+void turn_on_buzzer(int total_beeps) {
+    buzzer_on = true;
     digitalWrite(PIN_BUZZER, HIGH);
     cadence = 0;
-    buzzer_on = true;
+    beeps = total_beeps;
 }
 
 void turn_off_buzzer() {
@@ -144,7 +145,7 @@ void log_event(int event, long long elapsed_ms) {
         sprintf(description, "Break timed out. %02d:%02d", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_STOPWATCH:
-        strcpy (description, "Start reading");
+        strcpy (description, "Started reading");
         break;
         case TIMER_STOPWATCH_STOP:
         sprintf(description, "Finished reading. %02d:%02d", elapsed_minutes, elapsed_seconds);
@@ -209,6 +210,9 @@ void* timer_daemon(void *arg) {
         if (buzzer_on) {
             if (cadence == steps/2) {
                 digitalWrite (PIN_BUZZER, LOW);
+                if (beeps > 0 && (--beeps <= 0)) {
+                    buzzer_on = false;
+                }
             }
             else if (cadence == 0) {
                 digitalWrite (PIN_BUZZER, HIGH);
@@ -246,19 +250,18 @@ int main(int argc, char *argv[])
         digitalWrite(PIN_LED_G, HIGH);
         digitalWrite(PIN_LED_Y, HIGH);
 
-        delay(30 * 1000);//30 seconds
+        delay_ms(30 * 1000);//30 seconds
     }   
     turn_off_all_leds();
     
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
-    
 
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
     unsigned long long start_at, timeout_at = 0, now = 0;
-    int counter = 0, reminder = 0, alt = 0, beep_counter = 0;
+    int counter = 0, reminder = 0, alt = 0;
     while (!done) {
         int key_event = 0;
         if (header != tail) {
@@ -340,7 +343,7 @@ int main(int argc, char *argv[])
                     timer_state = TIMER_STOPWATCH;
                     timer_sub_state = 0;
                     start_at = now;
-                    counter= reminder = alt = beep_counter = 0;
+                    counter= reminder = alt = 0;
                     turn_off_all_leds();
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_STOPWATCH, 0);
@@ -352,7 +355,7 @@ int main(int argc, char *argv[])
                     timer_sub_state = TIMER_TV_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_R, HIGH); //R always on
-                    turn_on_buzzer(); //buzzer on
+                    turn_on_buzzer(0); //buzzer on
                     counter = 0;
                     log_event(TIMER_TV_TIMEOUT_, now - start_at);
                 }
@@ -366,7 +369,7 @@ int main(int argc, char *argv[])
                     timer_sub_state = TIMER_LEARNING_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_G, HIGH); //G always on
-                    turn_on_buzzer(); //buzzer on
+                    turn_on_buzzer(0); //buzzer on
                     counter = 0;
                     log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
                 }
@@ -380,7 +383,7 @@ int main(int argc, char *argv[])
                     timer_sub_state = TIMER_BREAK_TIMEOUT_;
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_Y, HIGH); //Y always on
-                    turn_on_buzzer(); //buzzer on
+                    turn_on_buzzer(0); //buzzer on
                     counter = 0;
                     log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
                 }
@@ -405,15 +408,11 @@ int main(int argc, char *argv[])
                     else
                         digitalWrite(PIN_LED_Y, HIGH);
 
-                    if (beep_counter > 0 && --beep_counter <= 0) {
-                        turn_off_buzzer();
-                    }                    
                     //Reminder every N seconds
                     int to_reminder = (now - start_at) / 1000 / REMINDER_INTERVAL;
                     if (to_reminder > 0 && reminder < to_reminder) {
                         reminder = to_reminder;
-                        beep_counter = reminder * 2;
-                        turn_on_buzzer();
+                        turn_on_buzzer(reminder);
                     }
                 }
                 break;
