@@ -12,6 +12,7 @@
 #define PIN_BTN1    29
 #define PIN_BTN2    26
 #define PIN_BTN3    10
+#define PIN_BTN4    0
 
 #define PIN_BUZZER	16
 
@@ -23,9 +24,11 @@
 #define KEY_BTN1_PRESSED    1
 #define KEY_BTN2_PRESSED    2
 #define KEY_BTN3_PRESSED    3
+#define KEY_BTN4_PRESSED    4
 #define KEY_BTN1_LONG_PRESSED    11
 #define KEY_BTN2_LONG_PRESSED    12
 #define KEY_BTN3_LONG_PRESSED    13
+#define KEY_BTN4_LONG_PRESSED    14
 
 #define BTN_LOW         10
 #define BTN_HIGH        11
@@ -38,12 +41,15 @@
 #define TIMER_LEARNING_TIMEOUT_ 4
 #define TIMER_BREAK             5
 #define TIMER_BREAK_TIMEOUT_    6
+#define TIMER_STOPWATCH         7
+#define TIMER_STOPWATCH_STOP    8
 #define TIMER_HARD_RESET        99
 
 #define DURATION_TV             15 //minutes
 #define DURATION_LEARNING       15 //minutes
 #define DURATION_BREAK          5  //minutes
 #define DURATION_BEEP           20 //seconds
+#define REMINDER_INTERVAL       300 //seconds, 5 minutes
 
 #ifndef bool
 #define bool    int
@@ -109,7 +115,7 @@ void beep() {
         return;
 
     digitalWrite(PIN_BUZZER, HIGH);
-    delay_ms(100);
+    delay_ms(200);
     digitalWrite(PIN_BUZZER,LOW);
 }
 
@@ -123,19 +129,25 @@ void log_event(int event, long long elapsed_ms) {
         strcpy (description, "Started watching TV");
         break;
         case TIMER_TV_TIMEOUT_:
-        sprintf(description, "Finished watching TV. %02d:%02", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished watching TV. %02d:%02d", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_LEARNING:
-        strcpy (description, "Started learning");
+        strcpy (description, "Started spelling bee");
         break;
         case TIMER_LEARNING_TIMEOUT_:
-        sprintf(description, "Finished learning. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished spelling bee. %02d:%02d", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_BREAK:
         strcpy (description, "Break time");
         break;
         case TIMER_BREAK_TIMEOUT_:
         sprintf(description, "Break timed out. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        break;
+        case TIMER_STOPWATCH:
+        strcpy (description, "Start reading");
+        break;
+        case TIMER_STOPWATCH_STOP:
+        sprintf(description, "Finished reading. %02d:%02d", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_HARD_RESET:
         strcpy(description, "Hard reset");
@@ -154,7 +166,7 @@ void log_event(int event, long long elapsed_ms) {
 
     FILE *pFile = fopen("/var/www/html/album/daily.html", "a");
     if (pFile) {
-        fprintf(pFile, "%s<br>", buffer);
+        fprintf(pFile, "%s<br>\r\n", buffer);
         fclose(pFile);
     }
 }
@@ -168,8 +180,8 @@ void generate_one_key(int event) {
 void* timer_daemon(void *arg) {
     tail = header = 0; //the buffer is empty
     int delay = 200, steps = 2000 / delay; //every two seconds
-    int btn_states[]={BTN_LOW, BTN_LOW, BTN_LOW};
-    int btn_pins[]={PIN_BTN1,PIN_BTN2,PIN_BTN3};
+    int btn_states[]={BTN_LOW, BTN_LOW, BTN_LOW, BTN_LOW};
+    int btn_pins[]={PIN_BTN1,PIN_BTN2,PIN_BTN3, PIN_BTN4};
     
     int counter = 0, counter_as_long = 10;
 	while (!done) {
@@ -222,6 +234,7 @@ int main(int argc, char *argv[])
     pinMode(PIN_BTN1, INPUT);
     pinMode(PIN_BTN2, INPUT);
     pinMode(PIN_BTN3, INPUT);
+    pinMode(PIN_BTN4, INPUT);
     pinMode(PIN_BUZZER, OUTPUT);
     pinMode(PIN_LED_R, OUTPUT);
     pinMode(PIN_LED_G, OUTPUT);
@@ -245,7 +258,7 @@ int main(int argc, char *argv[])
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
     unsigned long long start_at, timeout_at = 0, now = 0;
-    int counter = 0;
+    int counter = 0, reminder = 0, alt = 0, beep_counter = 0;
     while (!done) {
         int key_event = 0;
         if (header != tail) {
@@ -254,9 +267,8 @@ int main(int argc, char *argv[])
         }
         now = get_current_time();
         //hard reset
-        if (key_event == KEY_BTN1_LONG_PRESSED || 
-                key_event == KEY_BTN2_LONG_PRESSED ||
-                    key_event == KEY_BTN3_LONG_PRESSED) {
+        if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
+                    key_event == KEY_BTN3_LONG_PRESSED || key_event == KEY_BTN4_LONG_PRESSED) {
             log_event(TIMER_HARD_RESET, 0);
             if (timer_state == TIMER_TV) {
                 log_event(TIMER_TV_TIMEOUT_, now - start_at);
@@ -266,6 +278,9 @@ int main(int argc, char *argv[])
             }
             else if (timer_state == TIMER_BREAK) {
                 log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
+            }
+            else if (timer_state == TIMER_STOPWATCH) {
+                log_event(TIMER_STOPWATCH_STOP, now - start_at);
             }
             turn_off_all_leds();
             turn_off_buzzer();
@@ -298,7 +313,6 @@ int main(int argc, char *argv[])
                     timeout_at = now + DURATION_TV * 60 * 1000;
                     counter = 0;
                     turn_off_all_leds();
-                    turn_off_buzzer();
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_TV, 0);
                 }
@@ -309,7 +323,6 @@ int main(int argc, char *argv[])
                     timeout_at = now + DURATION_LEARNING * 60 * 1000;
                     counter = 0;
                     turn_off_all_leds();
-                    turn_off_buzzer();
                     digitalWrite(PIN_LED_G, HIGH);
                     log_event(TIMER_LEARNING, 0);
                 }
@@ -320,9 +333,17 @@ int main(int argc, char *argv[])
                     timeout_at = now + DURATION_BREAK * 60 * 1000;
                     counter= 0;
                     turn_off_all_leds();
-                    turn_off_buzzer();
                     digitalWrite(PIN_LED_Y, HIGH);
                     log_event(TIMER_BREAK, 0);
+                }
+                else if (key_event == KEY_BTN4_PRESSED) {//stopwatch
+                    timer_state = TIMER_STOPWATCH;
+                    timer_sub_state = 0;
+                    start_at = now;
+                    counter= reminder = alt = beep_counter = 0;
+                    turn_off_all_leds();
+                    digitalWrite(PIN_LED_R, HIGH);
+                    log_event(TIMER_STOPWATCH, 0);
                 }
                 break;
             case TIMER_TV:
@@ -354,7 +375,6 @@ int main(int argc, char *argv[])
                 }
                 break;
             case TIMER_BREAK:
-                now = get_current_time();
                 if (now >= timeout_at) {
                     timer_state = TIMER_IDLE;
                     timer_sub_state = TIMER_BREAK_TIMEOUT_;
@@ -368,6 +388,35 @@ int main(int argc, char *argv[])
                     digitalWrite(PIN_LED_Y, (counter & 1) ? LOW: HIGH);
                 }
                 break;
+            case TIMER_STOPWATCH:
+                if (key_event == KEY_BTN4_PRESSED) {
+                    timer_state = TIMER_IDLE;
+                    turn_off_buzzer();
+                    turn_off_all_leds();
+                    log_event(TIMER_STOPWATCH_STOP, now - start_at);
+                }
+                else {
+                    alt = (alt + 1) % 3;
+                    turn_off_all_leds();
+                    if (alt == 0)
+                        digitalWrite(PIN_LED_R, HIGH);
+                    else if (alt == 1)
+                        digitalWrite(PIN_LED_G, HIGH);
+                    else
+                        digitalWrite(PIN_LED_Y, HIGH);
+
+                    if (beep_counter > 0 && --beep_counter <= 0) {
+                        turn_off_buzzer();
+                    }                    
+                    //Reminder every N seconds
+                    int to_reminder = (now - start_at) / 1000 / REMINDER_INTERVAL;
+                    if (to_reminder > 0 && reminder < to_reminder) {
+                        reminder = to_reminder;
+                        beep_counter = reminder * 2;
+                        turn_on_buzzer();
+                    }
+                }
+                break;
         }
         delay_ms(1000);
         counter = (counter + 1) & 1;
@@ -378,5 +427,3 @@ int main(int argc, char *argv[])
     pthread_join(thread_daemon, NULL);
 	return 0;
 }
-
-
