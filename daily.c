@@ -51,7 +51,6 @@
 #define DURATION_BEEP           20 //seconds
 #define REMINDER_INTERVAL       300 //seconds, 5 minutes
 
-#define MAINTENANCE_HOUR        3
 #define LOG_FILE_MAX_LINE       100
 #define LOG_FILE_PATH           "/var/www/html/album/daily.html"
 
@@ -178,53 +177,43 @@ void log_event(int event, long long elapsed_ms) {
     time_t rawtime ;
     rawtime = time (NULL) ;
     timeinfo = localtime(&rawtime);
-    sprintf (buffer, "[%02d/%02d %02d:%02d:%02d]%s", timeinfo->tm_mon+1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, description);
+    sprintf (buffer, "[%02d/%02d %02d:%02d:%02d]%s<br>\r\n", timeinfo->tm_mon+1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, description);
 
-    FILE *pFile = fopen(LOG_FILE_PATH, "a");
-    if (pFile) {
-        fprintf(pFile, "%s<br>\r\n", buffer);
-        fclose(pFile);
-    }
-}
-
-void perform_maintenance() {
-    //get log file size
+    //load the log file into memory
+    char *content = NULL; size_t len = 0;
     FILE * file = fopen(LOG_FILE_PATH, "rb");
-    if (file == NULL)
-        return;
-
-    fseek(file, 0, SEEK_END);
-    size_t len = (size_t)ftell(file);
-    fseek(file, 0, SEEK_SET);
-    //allocate memory for loading the whole log file into memory
-    char *memory = (len > 0) ? malloc(len) : NULL;
-    if (memory) {
-        size_t available = fread(memory, len, 1, file);
-        fclose(file);//will re-open it for writing
-        if (available >= len) {
-            long lines = 0,  mid_pointer = 0;
-            for (int i = available - 1; i >= 0; --i) {
-                if (memory[i] == '\n') {
+    if (file) {
+        fseek(file, 0, SEEK_END);
+        len = (size_t)ftell(file);
+        fseek(file, 0, SEEK_SET);
+        //allocate memory for loading the whole log file into memory
+        content = (len > 0) ? malloc(len + 12) : NULL;
+        if (content) {
+            fread(content, len, 1, file);
+            //truncate it if needed
+            int lines = 0;
+            for (int i = 0; i < len; ++i) {
+                if (content[i] == '\n') {
                     if (++lines >= LOG_FILE_MAX_LINE) {
-                        mid_pointer = i + 1;
+                        len = i + 1;
                         break;
                     }
                 }
             }
-            if (mid_pointer > 0) {
-                //write the part of the file back
-                file = fopen (LOG_FILE_PATH, "wb");
-                if (file) {
-                    fwrite (memory + mid_pointer, available - mid_pointer, 1, file);
-                    fclose(file);
-                }
-            }
+            //truncate the file if needed
         }
-        free(memory);
-    }
-    else {
         fclose(file);
     }
+
+    FILE *ouput_file = fopen(LOG_FILE_PATH, "wb");
+    if (ouput_file) {
+        fputs(buffer, ouput_file);
+        if (content && (len > 0))
+            fwrite (content, len, 1, ouput_file);
+        fclose(ouput_file);
+    }
+    if (content)
+        free (content);
 }
 
 void generate_one_key(int event) {
@@ -325,27 +314,10 @@ int main(int argc, char *argv[])
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
     unsigned long long start_at, timeout_at = 0, now = 0;
-    unsigned long long system_idle = 0;
     int counter = 0, reminder = 0, alt = 0;
-    int last_maintenance_day = 0;
 
     while (!done) {
         int key_event = consume_one_key();
-        if (key_event == 0 && timer_state == TIMER_IDLE && timer_sub_state == 0) {
-            if (++system_idle >= 2 * 60 * 60) { //idle for at least two hours
-                int hour, mday;
-                get_hour_day(&hour, &mday);
-                if (hour >= MAINTENANCE_HOUR && hour < (MAINTENANCE_HOUR+1) && mday != last_maintenance_day) {
-                    last_maintenance_day = mday;
-                    system_idle = 0;
-                    perform_maintenance();
-                }
-            }
-        }
-        else {
-            system_idle = 0;
-        }
-
         now = get_current_time();
         //hard reset
         if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
