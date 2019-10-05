@@ -43,8 +43,8 @@
 #define TIMER_BREAK_TIMEOUT_    6
 #define TIMER_STOPWATCH         7
 #define TIMER_STOPWATCH_STOP    8
+#define TIMER_MAINTENANCE_      98
 #define TIMER_HARD_RESET        99
-#define TIMER_MAINTENANCE_      100
 
 #define DURATION_TV             15 //minutes
 #define DURATION_LEARNING       15 //minutes
@@ -136,6 +136,26 @@ void beep() {
     digitalWrite(PIN_BUZZER,LOW);
 }
 
+char *load_log_file(size_t *ptr_len) {
+    *ptr_len = 0;
+    //load the log file into memory
+    char *content = NULL; size_t len = 0;
+    FILE * file = fopen(LOG_FILE_PATH, "rb");
+    if (file) {
+        fseek(file, 0, SEEK_END);
+        len = (size_t)ftell(file);
+        fseek(file, 0, SEEK_SET);
+        //allocate memory for loading the whole log file into memory
+        content = (len > 0) ? malloc(len + 12) : NULL;
+        if (content) {
+            fread(content, len, 1, file);
+            *ptr_len = len;
+        }
+        fclose(file);
+    }
+    return content;
+}    
+
 void log_event(int event, long long elapsed_ms) {
     int elapsed_minutes = elapsed_ms / 1000 / 60;
     int elapsed_seconds = (elapsed_ms / 1000) % 60;
@@ -146,7 +166,7 @@ void log_event(int event, long long elapsed_ms) {
         strcpy (description, "Started watching TV");
         break;
         case TIMER_TV_TIMEOUT_:
-        sprintf(description, "Finished watching TV. <font color=\"red\">%02d:%02d></font>", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished watching TV. <font color=\"red\">%02d:%02d</font>", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_LEARNING:
         strcpy (description, "Started spelling bee");
@@ -169,8 +189,12 @@ void log_event(int event, long long elapsed_ms) {
         case TIMER_HARD_RESET:
         strcpy(description, "Hard reset");
         break;
-        case TIMER_MAINTENANCE_:
-        strcpy(description, "--------------------------------------------------");
+        case TIMER_MAINTENANCE_: {
+            int total_tv = elapsed_ms >> 16;
+            int total_spellingbee= (elapsed_ms & 0xffff) % 60;
+            int total_reading = (elapsed_ms & 0xffff) / 60;
+            sprintf(description, "====TV %02d, Spellingbee %02d, Reading %02d====", total_tv, total_spellingbee, total_reading);
+        }
         break;
         default:
         sprintf(description, "Unknown event: %d", event);
@@ -182,32 +206,22 @@ void log_event(int event, long long elapsed_ms) {
     time_t rawtime ;
     rawtime = time (NULL) ;
     timeinfo = localtime(&rawtime);
-    sprintf (buffer, "[%02d/%02d %02d:%02d:%02d]%s<br>\r\n", timeinfo->tm_mon+1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, description);
+    sprintf (buffer, "[%02d@%02d/%02d %02d:%02d:%02d]%s<br>\r\n", event, timeinfo->tm_mon+1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, description);
 
     //load the log file into memory
     char *content = NULL; size_t len = 0;
-    FILE * file = fopen(LOG_FILE_PATH, "rb");
-    if (file) {
-        fseek(file, 0, SEEK_END);
-        len = (size_t)ftell(file);
-        fseek(file, 0, SEEK_SET);
-        //allocate memory for loading the whole log file into memory
-        content = (len > 0) ? malloc(len + 12) : NULL;
-        if (content) {
-            fread(content, len, 1, file);
-            //truncate it if needed
-            int lines = 0;
-            for (int i = 0; i < len; ++i) {
-                if (content[i] == '\n') {
-                    if (++lines >= LOG_FILE_MAX_LINE) {
-                        len = i + 1;
-                        break;
-                    }
+    content = load_log_file (&len);
+    if (content) {
+        //truncate it if needed
+        int lines = 0;
+        for (int i = 0; i < len; ++i) {
+            if (content[i] == '\n') {
+                if (++lines >= LOG_FILE_MAX_LINE) {
+                    len = i + 1;
+                    break;
                 }
             }
-            //truncate the file if needed
         }
-        fclose(file);
     }
 
     FILE *ouput_file = fopen(LOG_FILE_PATH, "wb");
@@ -219,6 +233,66 @@ void log_event(int event, long long elapsed_ms) {
     }
     if (content)
         free (content);
+}
+
+int to_int(char *ptr) {
+    int value = 0;
+    //not a digit
+    while (*ptr < '0' || *ptr > '9')
+        ++ptr;
+    //digits
+    while (*ptr >= '0' && *ptr <= '9') {
+        value = value * 10 + *ptr - '0';
+        ++ptr;
+    }
+    return value;
+}
+
+void daily_maintenance() {
+    long long total_tv = 0, total_spellingbee = 0, total_reading = 0;
+    char *content = NULL; size_t len = 0;
+    content = load_log_file (&len);
+    if (content && len > 0) {  
+        char *header = content;
+        while (header) {
+            char *find = strchr(header, '@');
+            if (find == NULL)
+                break;
+            int code = to_int(header);
+            if (code == TIMER_MAINTENANCE_)//reached another day
+                break;
+            char *end = strchr(header, '\n');
+            if (end)
+                *end = '\0';
+            char *open_tag = strchr(header, '>');
+            char *close_tag= open_tag ? strchr(open_tag, '<') : NULL;
+            if (open_tag && close_tag) {
+                *close_tag = '\0';
+                char *mid = strchr(open_tag, ':'); //like 12:04
+                int minutes = to_int(open_tag);
+                int seconds = to_int(mid);
+                switch (code) {
+                    case TIMER_TV_TIMEOUT_:
+                    total_tv += minutes * 60 +seconds;
+                    break;
+                    case TIMER_LEARNING_TIMEOUT_:
+                    total_spellingbee += minutes * 60 + seconds;
+                    break;
+                    case TIMER_STOPWATCH_STOP:
+                    total_reading += minutes * 60 + seconds;
+                    break;
+                }
+            }
+            header = end ? end + 1 : NULL;
+        }
+    }
+    if (content)
+        free(content);
+    total_tv /= 60; //to minutes, up to 32767 minutes
+    total_spellingbee /= 60; //up to 60 minutes
+    total_reading /= 60; //up to 32767/60=546 miutes
+    log_event(TIMER_MAINTENANCE_, (total_tv << 16) | (total_reading * 60 + total_spellingbee));
+    
 }
 
 void generate_one_key(int event) {
@@ -332,7 +406,7 @@ int main(int argc, char *argv[])
                 if ((hour >= LOG_MAINTENANCE_HOUR) && (hour < (LOG_MAINTENANCE_HOUR+1)) && (mday != last_maintenance_day)) {
                     last_maintenance_day = mday;
                     system_idle = 0;
-                    log_event(TIMER_MAINTENANCE_, 0);
+                    daily_maintenance();
                 }
             }
         }
