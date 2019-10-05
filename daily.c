@@ -44,6 +44,7 @@
 #define TIMER_STOPWATCH         7
 #define TIMER_STOPWATCH_STOP    8
 #define TIMER_HARD_RESET        99
+#define TIMER_MAINTENANCE_      100
 
 #define DURATION_TV             15 //minutes
 #define DURATION_LEARNING       15 //minutes
@@ -53,6 +54,7 @@
 
 #define LOG_FILE_MAX_LINE       100
 #define LOG_FILE_PATH           "/var/www/html/album/daily.html"
+#define LOG_MAINTENANCE_HOUR    2 //3am
 
 #ifndef bool
 #define bool    int
@@ -144,13 +146,13 @@ void log_event(int event, long long elapsed_ms) {
         strcpy (description, "Started watching TV");
         break;
         case TIMER_TV_TIMEOUT_:
-        sprintf(description, "Finished watching TV. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished watching TV. <font color=\"red\">%02d:%02d></font>", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_LEARNING:
         strcpy (description, "Started spelling bee");
         break;
         case TIMER_LEARNING_TIMEOUT_:
-        sprintf(description, "Finished spelling bee. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished spelling bee. <font color=\"green\">%02d:%02d</font>", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_BREAK:
         strcpy (description, "Break time");
@@ -162,10 +164,13 @@ void log_event(int event, long long elapsed_ms) {
         strcpy (description, "Started reading");
         break;
         case TIMER_STOPWATCH_STOP:
-        sprintf(description, "Finished reading. %02d:%02d", elapsed_minutes, elapsed_seconds);
+        sprintf(description, "Finished reading. <font color=\"blue\">%02d:%02d</font>", elapsed_minutes, elapsed_seconds);
         break;
         case TIMER_HARD_RESET:
         strcpy(description, "Hard reset");
+        break;
+        case TIMER_MAINTENANCE_:
+        strcpy(description, "--------------------------------------------------");
         break;
         default:
         sprintf(description, "Unknown event: %d", event);
@@ -314,10 +319,26 @@ int main(int argc, char *argv[])
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
     unsigned long long start_at, timeout_at = 0, now = 0;
+    unsigned long long system_idle = 0;
     int counter = 0, reminder = 0, alt = 0;
+    int last_maintenance_day = 0;
 
     while (!done) {
         int key_event = consume_one_key();
+        if (key_event == 0 && timer_state == TIMER_IDLE && timer_sub_state == 0) {
+            if (++system_idle >= 60 * 60) { //idle for at least one hour
+                int hour, mday;
+                get_hour_day(&hour, &mday);
+                if ((hour >= LOG_MAINTENANCE_HOUR) && (hour < (LOG_MAINTENANCE_HOUR+1)) && (mday != last_maintenance_day)) {
+                    last_maintenance_day = mday;
+                    system_idle = 0;
+                    log_event(TIMER_MAINTENANCE_, 0);
+                }
+            }
+        }
+        else {
+            system_idle = 0;
+        }
         now = get_current_time();
         //hard reset
         if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
@@ -365,6 +386,7 @@ int main(int argc, char *argv[])
                     start_at = now;
                     timeout_at = now + DURATION_TV * 60 * 1000;
                     counter = 0;
+                    turn_off_buzzer();
                     turn_off_all_leds();
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_TV, 0);
@@ -375,6 +397,7 @@ int main(int argc, char *argv[])
                     start_at = now;
                     timeout_at = now + DURATION_LEARNING * 60 * 1000;
                     counter = 0;
+                    turn_off_buzzer();
                     turn_off_all_leds();
                     digitalWrite(PIN_LED_G, HIGH);
                     log_event(TIMER_LEARNING, 0);
@@ -385,6 +408,7 @@ int main(int argc, char *argv[])
                     start_at = now;
                     timeout_at = now + DURATION_BREAK * 60 * 1000;
                     counter= 0;
+                    turn_off_buzzer();
                     turn_off_all_leds();
                     digitalWrite(PIN_LED_Y, HIGH);
                     log_event(TIMER_BREAK, 0);
@@ -394,6 +418,7 @@ int main(int argc, char *argv[])
                     timer_sub_state = 0;
                     start_at = now;
                     counter= reminder = alt = 0;
+                    turn_off_buzzer();
                     turn_off_all_leds();
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_STOPWATCH, 0);
