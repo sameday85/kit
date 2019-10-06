@@ -9,11 +9,14 @@
 #include <time.h>
 #include <signal.h>
 
+#define LAUNCH_MODE_CMD_LINE        0
+#define LAUNCH_MODE_ON_BOOT         1
+
 #define PIN_BTN1    29
 #define PIN_BTN2    26
 #define PIN_BTN3    10
 #define PIN_BTN4    0
-
+#define PIN_LDR     15
 #define PIN_BUZZER	16
 
 #define PIN_LED_R   28
@@ -56,12 +59,21 @@
 #define LOG_FILE_PATH           "/var/www/html/album/daily.html"
 #define LOG_MAINTENANCE_HOUR    2 //3am
 
+#define DISPLAY_OFF             0
+#define DISPLAY_SYS_TIME        1
+#define DISPLAY_COUNT           2
+
+#define SYS_TIME_ON_IF_IDLE     120  //seconds, must be bigger than DURATION_BEEP
+#define SYS_TIME_OFF_HOUR       0 //am
+#define SYS_TIME_ON_HOUR        7 //am
+
 #ifndef bool
 #define bool    int
 #define true    1
 #define false   0
 #endif
 
+static int launch_mode, display_mode;
 static bool done = false, buzzer_on = false;
 static int cadence, beeps;
 static int keys[MAX_KEY_BUFF], tail, header;
@@ -88,7 +100,8 @@ void hook_signal() {
 }
 
 void delay_ms(int x) {
-	usleep(x * 1000);
+    if (x > 0)
+	    usleep(x * 1000);
 }
 
 unsigned long long get_current_time() {
@@ -134,6 +147,25 @@ void beep() {
     digitalWrite(PIN_BUZZER, HIGH);
     delay_ms(200);
     digitalWrite(PIN_BUZZER,LOW);
+}
+
+//daylight: around 100ms, dark: >200ms
+int get_ldr_measurement() {
+    pinMode (PIN_LDR, OUTPUT);
+    digitalWrite(PIN_LDR, LOW); 
+    delay(200);
+
+    unsigned long long start = get_current_time();
+    pinMode (PIN_LDR, INPUT);
+    int wait = 400, step=10, val=digitalRead(PIN_LDR);
+    while ((val == LOW) && (wait > 0)) {
+        delay(step);
+        wait -= step;
+        val=digitalRead(PIN_LDR);
+    }
+    unsigned long long end = get_current_time();
+  
+    return (int)(end - start);
 }
 
 char *load_log_file(size_t *ptr_len) {
@@ -356,13 +388,47 @@ void* timer_daemon(void *arg) {
 	return NULL;
 }
 
+void display(int new_mode, int value) {
+    int left_part = -1, right_part = -1;
+    if (new_mode == DISPLAY_OFF) {
+        if (display_mode != DISPLAY_OFF) {
+            //turn off
+        }
+    }
+    else if (new_mode == DISPLAY_SYS_TIME) {
+        struct tm *timeinfo ;
+        time_t rawtime ;
+        rawtime = time (NULL) ;
+        timeinfo = localtime(&rawtime);
+        
+        left_part = timeinfo->tm_hour;
+        right_part= timeinfo->tm_min;
+    }
+    else if (new_mode == DISPLAY_COUNT) {
+        if (value < 0)
+            value = 0;
+        left_part = value / 60;
+        right_part= value % 60;
+    }
+    if (display_mode == DISPLAY_OFF && new_mode != DISPLAY_OFF) {
+        //turn on first
+    }
+    display_mode = new_mode;
+    if (left_part < 0 || right_part < 0)
+        return;
+
+    if (launch_mode == LAUNCH_MODE_CMD_LINE) {
+        printf("%02d:%02d\n", left_part, right_part);
+    }
+}
+
 //gcc -o daily daily.c -lpthread -lwiringPi -lwiringPiDev -lm
 int main(int argc, char *argv[]) 
 {
-    bool on_boot = false;
+    launch_mode = LAUNCH_MODE_CMD_LINE;
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp (argv[i], "-boot") == 0)
-			on_boot = true;
+			launch_mode = LAUNCH_MODE_ON_BOOT;
 	}
     
 	hook_signal();
@@ -371,13 +437,14 @@ int main(int argc, char *argv[])
     pinMode(PIN_BTN2, INPUT);
     pinMode(PIN_BTN3, INPUT);
     pinMode(PIN_BTN4, INPUT);
+    pinMode(PIN_LDR, INPUT);
     pinMode(PIN_BUZZER, OUTPUT);
     pinMode(PIN_LED_R, OUTPUT);
     pinMode(PIN_LED_G, OUTPUT);
     pinMode(PIN_LED_Y, OUTPUT);
-    
+
     turn_off_buzzer();
-    if (on_boot) {
+    if (launch_mode == LAUNCH_MODE_ON_BOOT) {
         digitalWrite(PIN_LED_R, HIGH);
         digitalWrite(PIN_LED_G, HIGH);
         digitalWrite(PIN_LED_Y, HIGH);
@@ -388,6 +455,7 @@ int main(int argc, char *argv[])
 
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
+    display_mode = DISPLAY_OFF;
 
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
@@ -398,22 +466,44 @@ int main(int argc, char *argv[])
     int last_maintenance_day = 0;
 
     while (!done) {
+        now = get_current_time();
         int key_event = consume_one_key();
         if (key_event == 0 && timer_state == TIMER_IDLE && timer_sub_state == 0) {
-            if (++system_idle >= 60 * 60) { //idle for at least one hour
+            if (system_idle >= 60 * 60) { //idle for at least one hour
                 int hour, mday;
                 get_hour_day(&hour, &mday);
                 if ((hour >= LOG_MAINTENANCE_HOUR) && (hour < (LOG_MAINTENANCE_HOUR+1)) && (mday != last_maintenance_day)) {
                     last_maintenance_day = mday;
-                    system_idle = 0;
                     daily_maintenance();
                 }
             }
+            switch (display_mode) {
+                case DISPLAY_OFF:
+                if (system_idle >= SYS_TIME_ON_IF_IDLE) {
+                    int hour, mday;
+                    get_hour_day(&hour, &mday);
+                    //for example, on: 7am, off: 0am
+                    if (hour >= SYS_TIME_ON_HOUR || hour < SYS_TIME_OFF_HOUR)
+                        display(DISPLAY_SYS_TIME, 0);
+                }
+                break;
+                case DISPLAY_COUNT: //for example, in tv time
+                break;
+                case DISPLAY_SYS_TIME: {
+                    int hour, mday;
+                    get_hour_day(&hour, &mday);
+                    if (hour >= SYS_TIME_ON_HOUR || hour < SYS_TIME_OFF_HOUR)
+                        display(DISPLAY_SYS_TIME, 0);
+                    else
+                        display(DISPLAY_OFF, 0);
+                }
+                break;
+            }
+            ++system_idle;
         }
         else {
             system_idle = 0;
         }
-        now = get_current_time();
         //hard reset
         if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
                     key_event == KEY_BTN3_LONG_PRESSED || key_event == KEY_BTN4_LONG_PRESSED) {
@@ -432,6 +522,7 @@ int main(int argc, char *argv[])
             }
             turn_off_all_leds();
             turn_off_buzzer();
+            display(DISPLAY_OFF, 0);
             timer_state = TIMER_IDLE;
             timer_sub_state = 0;
             key_event = 0;
@@ -439,19 +530,23 @@ int main(int argc, char *argv[])
         switch (timer_state) {
             case TIMER_IDLE:
                 if (timer_sub_state) {
+                    //user turns the beep off after the learning/watching tv timeout
                     if ((key_event == KEY_BTN1_PRESSED && timer_sub_state == TIMER_TV_TIMEOUT_) ||
                             (key_event == KEY_BTN2_PRESSED && timer_sub_state == TIMER_LEARNING_TIMEOUT_) ||
                                 (key_event == KEY_BTN3_PRESSED && timer_sub_state == TIMER_BREAK_TIMEOUT_)) {
                         timer_sub_state = 0;
                         turn_off_all_leds();
                         turn_off_buzzer();
+                        display(DISPLAY_OFF, 0);
 
                         key_event = 0;
                     }
+                    //auto turn the beep off after 20 seconds(DURATION_BEEP)
                     if (timer_sub_state && (now >= timeout_at)) {
                         timer_sub_state = 0;
                         turn_off_all_leds();
                         turn_off_buzzer();
+                        display(DISPLAY_OFF, 0);
                     }
                 }
                 if (key_event == KEY_BTN1_PRESSED) {//tv time
@@ -462,6 +557,7 @@ int main(int argc, char *argv[])
                     counter = 0;
                     turn_off_buzzer();
                     turn_off_all_leds();
+                    display(DISPLAY_COUNT, DURATION_TV * 60);
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_TV, 0);
                 }
@@ -473,6 +569,7 @@ int main(int argc, char *argv[])
                     counter = 0;
                     turn_off_buzzer();
                     turn_off_all_leds();
+                    display(DISPLAY_COUNT, DURATION_LEARNING * 60);
                     digitalWrite(PIN_LED_G, HIGH);
                     log_event(TIMER_LEARNING, 0);
                 }
@@ -484,6 +581,7 @@ int main(int argc, char *argv[])
                     counter= 0;
                     turn_off_buzzer();
                     turn_off_all_leds();
+                    display(DISPLAY_COUNT, DURATION_BREAK * 60);
                     digitalWrite(PIN_LED_Y, HIGH);
                     log_event(TIMER_BREAK, 0);
                 }
@@ -494,6 +592,7 @@ int main(int argc, char *argv[])
                     counter= reminder = alt = 0;
                     turn_off_buzzer();
                     turn_off_all_leds();
+                    display(DISPLAY_COUNT, 0);
                     digitalWrite(PIN_LED_R, HIGH);
                     log_event(TIMER_STOPWATCH, 0);
                 }
@@ -505,11 +604,13 @@ int main(int argc, char *argv[])
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_R, HIGH); //R always on
                     turn_on_buzzer(0); //buzzer on
+                    display(DISPLAY_COUNT, 0);
                     counter = 0;
                     log_event(TIMER_TV_TIMEOUT_, now - start_at);
                 }
                 else {
                     digitalWrite(PIN_LED_R, (counter & 1) ? LOW: HIGH);
+                    display(DISPLAY_COUNT, DURATION_TV * 60 - (now - start_at)/1000); //time left
                 }
                 break;
             case TIMER_LEARNING:
@@ -519,11 +620,13 @@ int main(int argc, char *argv[])
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_G, HIGH); //G always on
                     turn_on_buzzer(0); //buzzer on
+                    display(DISPLAY_COUNT, 0);
                     counter = 0;
                     log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
                 }
                 else {
                     digitalWrite(PIN_LED_G, (counter & 1) ? LOW: HIGH);
+                    display(DISPLAY_COUNT, DURATION_LEARNING * 60 - (now - start_at)/1000);
                 }
                 break;
             case TIMER_BREAK:
@@ -533,10 +636,12 @@ int main(int argc, char *argv[])
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_Y, HIGH); //Y always on
                     turn_on_buzzer(0); //buzzer on
+                    display(DISPLAY_COUNT, 0);
                     counter = 0;
                     log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
                 }
                 else {
+                    display(DISPLAY_COUNT, DURATION_BREAK * 60 - (now - start_at)/1000);
                     digitalWrite(PIN_LED_Y, (counter & 1) ? LOW: HIGH);
                 }
                 break;
@@ -545,6 +650,7 @@ int main(int argc, char *argv[])
                     timer_state = TIMER_IDLE;
                     turn_off_buzzer();
                     turn_off_all_leds();
+                    display(DISPLAY_COUNT, 0);
                     log_event(TIMER_STOPWATCH_STOP, now - start_at);
                 }
                 else {
@@ -556,7 +662,7 @@ int main(int argc, char *argv[])
                         digitalWrite(PIN_LED_G, HIGH);
                     else
                         digitalWrite(PIN_LED_Y, HIGH);
-
+                    display(DISPLAY_COUNT, (now - start_at)/1000);//elapsed time
                     //Reminder every N seconds
                     int to_reminder = (now - start_at) / 1000 / REMINDER_INTERVAL;
                     if (to_reminder > 0 && reminder < to_reminder) {
@@ -566,8 +672,9 @@ int main(int argc, char *argv[])
                 }
                 break;
         }
-        delay_ms(1000);
         counter = (counter + 1) & 1;
+        int consumed = (int)(get_current_time() - now);
+        delay_ms(1000 - consumed);
     }
     turn_off_all_leds();
     turn_off_buzzer();
