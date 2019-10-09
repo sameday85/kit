@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <signal.h>
+#include "TM1637.h"
 
 #define LAUNCH_MODE_CMD_LINE        0
 #define LAUNCH_MODE_ON_BOOT         1
@@ -22,6 +23,10 @@
 #define PIN_LED_R   28
 #define PIN_LED_G   21
 #define PIN_LED_Y   6
+
+#define PIN_CLK     9//pins definitions for TM1637 and can be changed to other ports       
+#define PIN_DIO     8
+
 
 #define MAX_KEY_BUFF       10
 #define KEY_BTN1_PRESSED    1
@@ -63,7 +68,7 @@
 #define DISPLAY_SYS_TIME        1
 #define DISPLAY_COUNT           2
 
-#define SYS_TIME_ON_IF_IDLE     120  //seconds, must be bigger than DURATION_BEEP
+#define SYS_TIME_ON_IF_IDLE     60  //seconds, must be bigger than DURATION_BEEP
 #define SYS_TIME_OFF_HOUR       0 //am
 #define SYS_TIME_ON_HOUR        7 //am
 
@@ -390,12 +395,16 @@ void* timer_daemon(void *arg) {
 
 void display(int new_mode, int value) {
     int left_part = -1, right_part = -1;
-    if (new_mode == DISPLAY_OFF) {
-        if (display_mode != DISPLAY_OFF) {
-            //turn off
-        }
+    if (new_mode == DISPLAY_OFF && (display_mode != DISPLAY_OFF)) {
+        //turn off
+        TM1637_point(POINT_OFF);
+        TM1637_clearDisplay();
     }
-    else if (new_mode == DISPLAY_SYS_TIME) {
+    else if (display_mode == DISPLAY_OFF && new_mode != DISPLAY_OFF) {
+        //turn on first
+    }
+    
+    if (new_mode == DISPLAY_SYS_TIME) {
         struct tm *timeinfo ;
         time_t rawtime ;
         rawtime = time (NULL) ;
@@ -403,26 +412,33 @@ void display(int new_mode, int value) {
         
         left_part = timeinfo->tm_hour;
         right_part= timeinfo->tm_min;
+        TM1637_point((timeinfo->tm_sec & 1) ? POINT_ON : POINT_OFF);
     }
     else if (new_mode == DISPLAY_COUNT) {
         if (value < 0)
             value = 0;
         left_part = value / 60;
         right_part= value % 60;
-    }
-    if (display_mode == DISPLAY_OFF && new_mode != DISPLAY_OFF) {
-        //turn on first
+        TM1637_point(POINT_OFF);
     }
     display_mode = new_mode;
     if (left_part < 0 || right_part < 0)
         return;
 
+    int8_t digits[4];
+    digits[0]=left_part / 10;
+    digits[1]=left_part % 10;
+    digits[2]=right_part / 10;
+    digits[3]=right_part % 10;
+    TM1637_display_str(digits);
+    
     if (launch_mode == LAUNCH_MODE_CMD_LINE) {
         printf("%02d:%02d\n", left_part, right_part);
     }
+    
 }
 
-//gcc -o daily daily.c -lpthread -lwiringPi -lwiringPiDev -lm
+//gcc -o daily daily.c TM1637.c -lpthread -lwiringPi -lwiringPiDev -lm
 int main(int argc, char *argv[]) 
 {
     launch_mode = LAUNCH_MODE_CMD_LINE;
@@ -437,13 +453,21 @@ int main(int argc, char *argv[])
     pinMode(PIN_BTN2, INPUT);
     pinMode(PIN_BTN3, INPUT);
     pinMode(PIN_BTN4, INPUT);
-    pinMode(PIN_LDR, INPUT);
+    pinMode(PIN_LDR,  INPUT);
     pinMode(PIN_BUZZER, OUTPUT);
     pinMode(PIN_LED_R, OUTPUT);
     pinMode(PIN_LED_G, OUTPUT);
     pinMode(PIN_LED_Y, OUTPUT);
+    
+    pinMode(PIN_DIO, INPUT);
+    pinMode(PIN_CLK, INPUT);
 
     turn_off_buzzer();
+    TM1637_init(PIN_CLK,PIN_DIO);
+    TM1637_set(BRIGHTEST,0x40,0xc0);//BRIGHT_TYPICAL = 2,BRIGHT_DARKEST = 0,BRIGHTEST = 7;
+    TM1637_point(POINT_OFF);
+    TM1637_clearDisplay();
+
     if (launch_mode == LAUNCH_MODE_ON_BOOT) {
         digitalWrite(PIN_LED_R, HIGH);
         digitalWrite(PIN_LED_G, HIGH);
@@ -636,7 +660,7 @@ int main(int argc, char *argv[])
                     timeout_at = get_current_time() + DURATION_BEEP * 1000;
                     digitalWrite(PIN_LED_Y, HIGH); //Y always on
                     turn_on_buzzer(0); //buzzer on
-                    display(DISPLAY_COUNT, 0);
+                    display(DISPLAY_OFF, 0);
                     counter = 0;
                     log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
                 }
@@ -650,7 +674,7 @@ int main(int argc, char *argv[])
                     timer_state = TIMER_IDLE;
                     turn_off_buzzer();
                     turn_off_all_leds();
-                    display(DISPLAY_COUNT, 0);
+                    display(DISPLAY_OFF, 0);
                     log_event(TIMER_STOPWATCH_STOP, now - start_at);
                 }
                 else {
@@ -678,6 +702,8 @@ int main(int argc, char *argv[])
     }
     turn_off_all_leds();
     turn_off_buzzer();
+    TM1637_point(POINT_OFF);
+    TM1637_clearDisplay();
     
     pthread_join(thread_daemon, NULL);
 	return 0;
