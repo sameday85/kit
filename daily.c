@@ -51,6 +51,9 @@
 #define TIMER_BREAK_TIMEOUT_    6
 #define TIMER_STOPWATCH         7
 #define TIMER_STOPWATCH_STOP    8
+#define TIMER_TV_PAUSED         9
+#define TIMER_LEARNING_PAUSED   10
+
 #define TIMER_MAINTENANCE_      98
 #define TIMER_HARD_RESET        99
 
@@ -484,7 +487,7 @@ int main(int argc, char *argv[])
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
-    unsigned long long start_at, timeout_at = 0, now = 0;
+    unsigned long long start_at, timeout_at = 0, now = 0, elapsed = 0;
     unsigned long long system_idle = 0;
     int counter = 0, reminder = 0, alt = 0;
     int last_maintenance_day = 0;
@@ -532,17 +535,25 @@ int main(int argc, char *argv[])
         if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
                     key_event == KEY_BTN3_LONG_PRESSED || key_event == KEY_BTN4_LONG_PRESSED) {
             log_event(TIMER_HARD_RESET, 0);
-            if (timer_state == TIMER_TV) {
+            switch (timer_state) {
+                case TIMER_TV:
                 log_event(TIMER_TV_TIMEOUT_, now - start_at);
-            }
-            else if (timer_state == TIMER_LEARNING) {
+                break;
+                case TIMER_TV_PAUSED:
+                log_event(TIMER_TV_TIMEOUT_, elapsed);
+                break;
+                case TIMER_LEARNING:
                 log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
-            }
-            else if (timer_state == TIMER_BREAK) {
+                break;
+                case TIMER_LEARNING_PAUSED:
+                log_event(TIMER_LEARNING_TIMEOUT_, elapsed);
+                break;
+                case TIMER_BREAK:
                 log_event(TIMER_BREAK_TIMEOUT_, now - start_at);
-            }
-            else if (timer_state == TIMER_STOPWATCH) {
+                break;
+                case TIMER_STOPWATCH:
                 log_event(TIMER_STOPWATCH_STOP, now - start_at);
+                break;
             }
             turn_off_all_leds();
             turn_off_buzzer();
@@ -633,8 +644,23 @@ int main(int argc, char *argv[])
                     log_event(TIMER_TV_TIMEOUT_, now - start_at);
                 }
                 else {
-                    digitalWrite(PIN_LED_R, (counter & 1) ? LOW: HIGH);
-                    display(DISPLAY_COUNT, DURATION_TV * 60 - (now - start_at)/1000); //time left
+                    elapsed = now - start_at;
+                    if (key_event == KEY_BTN1_PRESSED) {
+                        timer_state = TIMER_TV_PAUSED;
+                        digitalWrite(PIN_LED_R, HIGH);
+                    }
+                    else {
+                        digitalWrite(PIN_LED_R, (counter & 1) ? LOW: HIGH);
+                    }
+                    display(DISPLAY_COUNT, DURATION_TV * 60 - elapsed/1000); //time left
+                }
+                break;
+            case TIMER_TV_PAUSED:
+                if (key_event == KEY_BTN1_PRESSED) {
+                    start_at = now - elapsed;
+                    timeout_at = start_at + DURATION_TV * 60 * 1000;
+                    timer_state = TIMER_TV;
+                    digitalWrite(PIN_LED_R, LOW);
                 }
                 break;
             case TIMER_LEARNING:
@@ -649,8 +675,23 @@ int main(int argc, char *argv[])
                     log_event(TIMER_LEARNING_TIMEOUT_, now - start_at);
                 }
                 else {
-                    digitalWrite(PIN_LED_G, (counter & 1) ? LOW: HIGH);
-                    display(DISPLAY_COUNT, DURATION_LEARNING * 60 - (now - start_at)/1000);
+                    elapsed = now - start_at;
+                    if (key_event == KEY_BTN2_PRESSED) {
+                        timer_state = TIMER_LEARNING_PAUSED;
+                        digitalWrite(PIN_LED_G, HIGH);
+                    }
+                    else {
+                        digitalWrite(PIN_LED_G, (counter & 1) ? LOW: HIGH);
+                    }
+                    display(DISPLAY_COUNT, DURATION_LEARNING * 60 - elapsed/1000);
+                }
+                break;
+            case TIMER_LEARNING_PAUSED:
+                if (key_event == KEY_BTN2_PRESSED) {
+                    start_at = now - elapsed;
+                    timeout_at = start_at + DURATION_LEARNING * 60 * 1000;
+                    timer_state = TIMER_LEARNING;
+                    digitalWrite(PIN_LED_G, LOW);
                 }
                 break;
             case TIMER_BREAK:
