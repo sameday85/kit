@@ -27,6 +27,7 @@
 #define PIN_CLK     9//pins definitions for TM1637 and can be changed to other ports       
 #define PIN_DIO     8
 
+#define PIN_DHT11   1
 
 #define MAX_KEY_BUFF       10
 #define KEY_BTN1_PRESSED    1
@@ -71,6 +72,11 @@
 #define DISPLAY_SYS_TIME        1
 #define DISPLAY_COUNT           2
 
+#define TOGGLE_NONE             0
+#define TOGGLE_TIME             1
+#define TOGGLE_TEMPERATURE      2
+#define TOGGLE_HUMIDITY         3
+
 #define SYS_TIME_ON_IF_IDLE     60  //seconds, must be bigger than DURATION_BEEP
 #define SYS_TIME_OFF_HOUR       0 //am
 #define SYS_TIME_ON_HOUR        7 //am
@@ -85,6 +91,8 @@ static int launch_mode, display_mode;
 static bool done = false, buzzer_on = false;
 static int cadence, beeps;
 static int keys[MAX_KEY_BUFF], tail, header;
+static int last_dht11_timestamp;
+static int temperature, humidity;
 
 void handle_signal(int signal) {
     // Find out which signal we're handling
@@ -174,6 +182,70 @@ int get_ldr_measurement() {
     unsigned long long end = get_current_time();
   
     return (int)(end - start);
+}
+
+bool read_dht11_dat(int *temperature, int *humidity)
+{
+    int dht11_dat[5];
+    uint8_t laststate   = HIGH, thisstate;
+    uint8_t counter     = 0;
+    uint8_t j       = 0, i;
+
+    dht11_dat[0] = dht11_dat[1] = dht11_dat[2] = dht11_dat[3] = dht11_dat[4] = 0;
+    *temperature = *humidity = 0;
+
+    /* pull pin down for 18 milliseconds */
+    pinMode( PIN_DHT11, OUTPUT );
+    digitalWrite( PIN_DHT11, LOW );
+    delay( 18 );
+    /* then pull it up for 40 microseconds */
+    digitalWrite( PIN_DHT11, HIGH );
+    delayMicroseconds( 40 );
+    /* prepare to read the pin */
+    pinMode( PIN_DHT11, INPUT );
+
+    /* detect change and read data */
+    for ( i = 0; i < 85; i++ ) {
+        counter = 0;
+		thisstate=digitalRead( PIN_DHT11 );
+        while ( thisstate == laststate ) {
+            counter++;
+            delayMicroseconds( 1 );
+            if ( counter == 255 ) {
+                break;
+            }
+			thisstate=digitalRead( PIN_DHT11 );
+        }
+        laststate = thisstate;
+        delayMicroseconds( 12 );
+  
+        if ( counter == 255 )
+            break;
+
+        /* ignore first 3 transitions */
+        if ( (i >= 4) && (i % 2 == 0) ) {
+            /* shove each bit into the storage bytes */
+            dht11_dat[j / 8] <<= 1;
+            if ( counter > 16 )
+                dht11_dat[j / 8] |= 1;
+            j++;
+        }
+    }
+
+    /*
+     * check we read 40 bits (8bit x 5 ) + verify checksum in the last byte
+     * print it out if data is good
+     */
+     bool data_available = false;
+    if ( (j >= 40) &&
+         (dht11_dat[4] == ( (dht11_dat[0] + dht11_dat[1] + dht11_dat[2] + dht11_dat[3]) & 0xFF) ) )
+    {
+        *temperature = (int)((dht11_dat[2] + dht11_dat[3] / 10.)  * 9. / 5. + 32);
+        *humidity = (int)(dht11_dat[0] + dht11_dat[1] / 10.);
+        data_available = true;
+    }
+    
+    return data_available;
 }
 
 char *load_log_file(size_t *ptr_len) {
@@ -397,7 +469,6 @@ void* timer_daemon(void *arg) {
 }
 
 void display(int new_mode, int value) {
-    int left_part = -1, right_part = -1;
     if (new_mode == DISPLAY_OFF && (display_mode != DISPLAY_OFF)) {
         //turn off
         TM1637_point(POINT_OFF);
@@ -407,6 +478,8 @@ void display(int new_mode, int value) {
         //turn on first
     }
     
+    int left_part = 0, right_part = 0;
+    int toggle_mode = TOGGLE_TIME;
     if (new_mode == DISPLAY_SYS_TIME) {
         struct tm *timeinfo ;
         time_t rawtime ;
@@ -415,7 +488,21 @@ void display(int new_mode, int value) {
         
         left_part = timeinfo->tm_hour;
         right_part= timeinfo->tm_min;
-        TM1637_point((timeinfo->tm_sec & 1) ? POINT_ON : POINT_OFF);
+        uint8_t point_status = (timeinfo->tm_sec & 1) ? POINT_ON : POINT_OFF;
+        //display the temperature & humidity for 8 seconds every 5 minutes
+        int temperature_humidity_duration = 8;
+        if ((timeinfo->tm_min > 0) && ((timeinfo->tm_min % 5) == 0) && (timeinfo->tm_sec < temperature_humidity_duration)) {
+            if (last_dht11_timestamp != timeinfo->tm_min) {
+                if (read_dht11_dat(&temperature, &humidity)) {
+                    last_dht11_timestamp = timeinfo->tm_min;
+                }
+            }
+            if (last_dht11_timestamp == timeinfo->tm_min) {
+                toggle_mode = (timeinfo->tm_sec < (temperature_humidity_duration / 2)) ? TOGGLE_TEMPERATURE : TOGGLE_HUMIDITY;
+                point_status = POINT_OFF;
+            }
+        }
+        TM1637_point(point_status);
     }
     else if (new_mode == DISPLAY_COUNT) {
         if (value < 0)
@@ -424,21 +511,36 @@ void display(int new_mode, int value) {
         right_part= value % 60;
         TM1637_point(POINT_OFF);
     }
+    else {
+        toggle_mode = TOGGLE_NONE;
+    }
     display_mode = new_mode;
-    if (left_part < 0 || right_part < 0)
+    
+    if (toggle_mode == TOGGLE_NONE)
         return;
 
     int8_t digits[4];
-    digits[0]=left_part / 10;
-    digits[1]=left_part % 10;
-    digits[2]=right_part / 10;
-    digits[3]=right_part % 10;
-    TM1637_display_str(digits);
-    
-    if (launch_mode == LAUNCH_MODE_CMD_LINE) {
-        printf("%02d:%02d\n", left_part, right_part);
+    if (toggle_mode == TOGGLE_TIME) {
+        digits[0]=left_part / 10;
+        digits[1]=left_part % 10;
+        digits[2]=right_part / 10;
+        digits[3]=right_part % 10;
+        TM1637_display_str(digits);
+    }    
+    else if (toggle_mode == TOGGLE_TEMPERATURE){
+        digits[0]=temperature / 10;
+        digits[1]=temperature % 10;
+        digits[2]=18; //blank
+        digits[3]=15; //'F'
+        TM1637_display_str(digits);
     }
-    
+    else if (toggle_mode == TOGGLE_HUMIDITY){
+        digits[0]=humidity / 10;
+        digits[1]=humidity % 10;
+        digits[2]=18; //blank
+        digits[3]=17; //'H'
+        TM1637_display_str(digits);
+    }
 }
 
 //gcc -o daily daily.c TM1637.c -lpthread -lwiringPi -lwiringPiDev -lm
@@ -483,7 +585,8 @@ int main(int argc, char *argv[])
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
     display_mode = DISPLAY_OFF;
-
+    last_dht11_timestamp = 0;
+    
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
