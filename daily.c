@@ -489,16 +489,18 @@ void display(int new_mode, int value) {
         left_part = timeinfo->tm_hour;
         right_part= timeinfo->tm_min;
         uint8_t point_status = (timeinfo->tm_sec & 1) ? POINT_ON : POINT_OFF;
-        //display the temperature & humidity for 8 seconds every 5 minutes
-        int temperature_humidity_duration = 8;
-        if ((timeinfo->tm_min > 0) && ((timeinfo->tm_min % 5) == 0) && (timeinfo->tm_sec < temperature_humidity_duration)) {
-            if (last_dht11_timestamp != timeinfo->tm_min) {
+        //display time, temperature & humidity every 5 seconds
+        int interval_seconds = 5;
+        int step = timeinfo->tm_sec % (interval_seconds * 3);
+        if (step >= interval_seconds) {//display temperature or humidity
+            int mark = timeinfo->tm_sec / (interval_seconds * 3);
+            if (last_dht11_timestamp != mark) {
                 if (read_dht11_dat(&temperature, &humidity)) {
-                    last_dht11_timestamp = timeinfo->tm_min;
+                    last_dht11_timestamp = mark;
                 }
             }
-            if (last_dht11_timestamp == timeinfo->tm_min) {
-                toggle_mode = (timeinfo->tm_sec < (temperature_humidity_duration / 2)) ? TOGGLE_TEMPERATURE : TOGGLE_HUMIDITY;
+            if (last_dht11_timestamp == mark) {
+                toggle_mode = (step < interval_seconds * 2) ? TOGGLE_TEMPERATURE : TOGGLE_HUMIDITY;
                 point_status = POINT_OFF;
             }
         }
@@ -585,7 +587,7 @@ int main(int argc, char *argv[])
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
     display_mode = DISPLAY_OFF;
-    last_dht11_timestamp = 0;
+    last_dht11_timestamp = -1;
     
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
