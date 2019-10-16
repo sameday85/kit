@@ -76,6 +76,7 @@
 #define TOGGLE_TIME             1
 #define TOGGLE_TEMPERATURE      2
 #define TOGGLE_HUMIDITY         3
+#define TOGGLE_OUTSIDE_TEMPERATURE      4
 
 #define SYS_TIME_ON_IF_IDLE     60  //seconds, must be bigger than DURATION_BEEP
 #define SYS_TIME_OFF_HOUR       0 //am
@@ -91,8 +92,10 @@ static int launch_mode, display_mode;
 static bool done = false, buzzer_on = false;
 static int cadence, beeps;
 static int keys[MAX_KEY_BUFF], tail, header;
-static int last_dht11_timestamp;
-static int temperature, humidity;
+static int last_dht11_timestamp, last_outside_timestamp;
+static int temperature, humidity, outside_temperature;
+
+extern bool frederick(int *outside_temperature);
 
 void handle_signal(int signal) {
     // Find out which signal we're handling
@@ -490,17 +493,32 @@ void display(int new_mode, int value) {
         right_part= timeinfo->tm_min;
         uint8_t point_status = (timeinfo->tm_sec & 1) ? POINT_ON : POINT_OFF;
         //display time, temperature & humidity every 5 seconds
-        int interval_seconds = 5;
-        int step = timeinfo->tm_sec % (interval_seconds * 3);
-        if (step >= interval_seconds) {//display temperature or humidity
-            int mark = timeinfo->tm_sec / (interval_seconds * 3);
+        int interval_seconds = 15; //4, 4, 4, 3
+        int step = timeinfo->tm_sec % interval_seconds;
+        if (step < 4) {
+            toggle_mode = TOGGLE_TIME;
+        }
+        else if (step < 12) { //temperature & humidity
+            int mark = timeinfo->tm_min / 5; //update every five minutes
             if (last_dht11_timestamp != mark) {
                 if (read_dht11_dat(&temperature, &humidity)) {
                     last_dht11_timestamp = mark;
                 }
             }
             if (last_dht11_timestamp == mark) {
-                toggle_mode = (step < interval_seconds * 2) ? TOGGLE_TEMPERATURE : TOGGLE_HUMIDITY;
+                toggle_mode = (step < 8) ? TOGGLE_TEMPERATURE : TOGGLE_HUMIDITY;
+                point_status = POINT_OFF;
+            }
+        }
+        else { //outside temperature
+            int mark = timeinfo->tm_min / 30; //update every half hour
+            if (mark != last_outside_timestamp) {
+                if (frederick(&outside_temperature)) {
+                    last_outside_timestamp = mark;
+                }
+            }
+            if (last_outside_timestamp == mark) {
+                toggle_mode = TOGGLE_OUTSIDE_TEMPERATURE;
                 point_status = POINT_OFF;
             }
         }
@@ -522,30 +540,36 @@ void display(int new_mode, int value) {
         return;
 
     int8_t digits[4];
-    if (toggle_mode == TOGGLE_TIME) {
+    switch (toggle_mode) {
+        case TOGGLE_TIME:
         digits[0]=left_part / 10;
         digits[1]=left_part % 10;
         digits[2]=right_part / 10;
         digits[3]=right_part % 10;
-        TM1637_display_str(digits);
-    }    
-    else if (toggle_mode == TOGGLE_TEMPERATURE){
+        break;
+        case TOGGLE_TEMPERATURE:
         digits[0]=temperature / 10;
         digits[1]=temperature % 10;
         digits[2]=18; //blank
         digits[3]=15; //'F'
-        TM1637_display_str(digits);
-    }
-    else if (toggle_mode == TOGGLE_HUMIDITY){
+        break;
+        case TOGGLE_HUMIDITY:
         digits[0]=humidity / 10;
         digits[1]=humidity % 10;
         digits[2]=18; //blank
         digits[3]=17; //'H'
-        TM1637_display_str(digits);
+        break;
+        case TOGGLE_OUTSIDE_TEMPERATURE:
+        digits[0]=outside_temperature / 10;
+        digits[1]=outside_temperature % 10;
+        digits[2]=18; //blank
+        digits[3]=19; //'O'
+        break;
     }
+    TM1637_display_str(digits);
 }
 
-//gcc -o daily daily.c TM1637.c -lpthread -lwiringPi -lwiringPiDev -lm
+//gcc -o daily daily.c TM1637.c yahoo.c -lpthread -lwiringPi -lwiringPiDev -lm -lssl -lcrypto
 int main(int argc, char *argv[]) 
 {
     launch_mode = LAUNCH_MODE_CMD_LINE;
@@ -587,7 +611,7 @@ int main(int argc, char *argv[])
     int timer_state = TIMER_IDLE, timer_sub_state = 0;
     header = tail = 0;
     display_mode = DISPLAY_OFF;
-    last_dht11_timestamp = -1;
+    last_dht11_timestamp = last_outside_timestamp = -1;
     
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);

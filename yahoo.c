@@ -34,7 +34,7 @@
 #include "common.h"
 
 #define FAIL    -1
-
+#define BUFFER_SIZE (1024*1024)
 /*---------------------------------------------------------------------*/
 /*--- OpenConnection - create socket and connect to server.         ---*/
 /*---------------------------------------------------------------------*/
@@ -45,19 +45,19 @@ int OpenConnection(const char *hostname, int port)
 
     if ( (host = gethostbyname(hostname)) == NULL )
     {
-        perror(hostname);
-        abort();
+        //perror(hostname);
+        return 0;
     }
     sd = socket(PF_INET, SOCK_STREAM, 0);
     bzero(&addr, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = *(long*)(host->h_addr);
-    if ( connect(sd, &addr, sizeof(addr)) != 0 )
+    if ( connect(sd, (const struct sockaddr *)&addr, sizeof(addr)) != 0 )
     {
         close(sd);
-        perror(hostname);
-        abort();
+        //perror(hostname);
+        sd = 0;
     }
     return sd;
 }
@@ -66,17 +66,15 @@ int OpenConnection(const char *hostname, int port)
 /*--- InitCTX - initialize the SSL engine.                          ---*/
 /*---------------------------------------------------------------------*/
 SSL_CTX* InitCTX(void)
-{   SSL_METHOD *method;
-    SSL_CTX *ctx;
-
+{
     OpenSSL_add_all_algorithms();       /* Load cryptos, et.al. */
     SSL_load_error_strings();           /* Bring in and register error messages */
-    method = TLSv1_2_client_method();       /* Create new client-method instance */
-    ctx = SSL_CTX_new(method);          /* Create new context */
+    const SSL_METHOD *method = TLS_client_method();       /* Create new client-method instance */
+    SSL_CTX *ctx = SSL_CTX_new(method);          /* Create new context */
     if ( ctx == NULL )
     {
-        ERR_print_errors_fp(stderr);
-        abort();
+        //ERR_print_errors_fp(stderr);
+        return NULL;
     }
     return ctx;
 }
@@ -113,34 +111,42 @@ void ShowCerts(SSL* ssl)
 //https://github.com/mrwicks/miscellaneous/blob/master/tls_1.2_example/client.c
 //https://www.yahoo.com/news/weather/united-states/maryland/frederick-12519814
 //gcc -Wall -o ssl_client ssl_client.c -L/usr/lib -lssl -lcrypto
-bool frederick(float *out_temperature) {   
+bool frederick(int *out_temperature) {   
     SSL_CTX *ctx;
     int server;
     SSL *ssl;
-    char buf[2048];
     int bytes;
     char *hostname, *portnum;
 
     int temperature = -999;
+    *out_temperature = 0;
     
     hostname="www.yahoo.com";
     portnum="443";
-    char *tag = "<span class=\"Va(t)\" data-reactid=\"33\">";
+    char *tag = "<span class=\"Va(t)\" data-reactid=\"";
 
     ctx = InitCTX();
+    if (ctx == NULL)
+        return false;
+
     server = OpenConnection(hostname, atoi(portnum));
+    if (server == 0)
+        return false;
+        
     ssl = SSL_new(ctx);                     /* create new SSL connection state */
     SSL_set_fd(ssl, server);                /* attach the socket descriptor */
-    if ( SSL_connect(ssl) == FAIL )         /* perform the connection */
-        ERR_print_errors_fp(stderr);
-    else
-    {   char *msg = "GET /news/weather/united-states/maryland/frederick-2372860 HTTP/1.1\r\nHost: www.yahoo.com\r\nAccept: text/plain, text/html, text/*\r\nUser-Agent: Mozilla/5.0 (iPad; CPU OS 6_0_1 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Mobile/10A523\r\nAccept-Language: en-us\r\n\r\n";
-
+    if ( SSL_connect(ssl) == FAIL ) {         /* perform the connection */
+        //ERR_print_errors_fp(stderr);
+    }
+    else{   
+        
+        char *msg = "GET /news/weather/united-states/maryland/frederick-2372860 HTTP/1.1\r\nHost: www.yahoo.com\r\nAccept: text/plain, text/html, text/*\r\nUser-Agent: Mozilla/5.0 (iPad; CPU OS 6_0_1 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Mobile/10A523\r\nAccept-Language: en-us\r\n\r\n";
         //printf("Connected with %s encryption\n", SSL_get_cipher(ssl));
         //ShowCerts(ssl);                               /* get any certs */
         SSL_write(ssl, msg, strlen(msg));           /* encrypt & send message */
+        char *buf = malloc(BUFFER_SIZE);
         //this is chunked-encoding
-        bytes = SSL_read(ssl, buf, sizeof(buf));    /* get reply & decrypt */
+        bytes = SSL_read(ssl, buf, BUFFER_SIZE);    /* get reply & decrypt */
         while (bytes > 0) {
             buf[bytes] = '\0';
             /*
@@ -153,15 +159,16 @@ bool frederick(float *out_temperature) {
             */ 
             char *ptr1 = strstr(buf, tag);
             if (ptr1) {
-                ptr1 += strlen (tag);
+                ptr1 = strstr(ptr1, ">") + 1;
                 char *ptr2 = strstr(ptr1, "<");
                 *ptr2='\0';
                 temperature = atoi(ptr1);
                 
                 break;
             }
-            bytes = SSL_read(ssl, buf, sizeof(buf));    /* get reply & decrypt */
+            bytes = SSL_read(ssl, buf, BUFFER_SIZE);    /* get reply & decrypt */
         }
+        free (buf);
         SSL_free(ssl);                              /* release connection state */
     }
     close(server);                                  /* close socket */
