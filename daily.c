@@ -94,8 +94,9 @@ static int cadence, beeps;
 static int keys[MAX_KEY_BUFF], tail, header;
 static int last_dht11_timestamp, last_outside_timestamp;
 static int temperature, humidity, outside_temperature;
+static char api_key[64];
 
-extern bool frederick(int *outside_temperature);
+extern char *do_get(char *url);
 
 void handle_signal(int signal) {
     // Find out which signal we're handling
@@ -471,6 +472,45 @@ void* timer_daemon(void *arg) {
 	return NULL;
 }
 
+bool get_outside_temperature(int *temperature) {
+    *temperature = 0;
+    bool got_it = false;
+    if (strlen(api_key) > 0) {
+        char url[255];
+        sprintf(url, "https://api.darksky.net/forecast/%s/39.3288,-77.3520", api_key);
+        char *content = do_get(url);
+        if (content) {//json
+            char *tag = "\"temperature\":";
+            char *ptr1 = strstr(content, tag);
+            if (ptr1) {
+                ptr1 += strlen(tag);
+                char *ptr2 = strstr(ptr1, ",");
+                *ptr2='\0';
+                double value = atof(ptr1);
+                *temperature = (int)value;
+                got_it = true;
+            }
+            free (content);
+        }
+    }
+    if (!got_it) {
+        char *content = do_get("https://www.yahoo.com/news/weather/united-states/maryland/frederick-2372860");
+        if (content) {//html
+            char *tag = "<span class=\"Va(t)\" data-reactid=\"";
+            char *ptr1 = strstr(content, tag);
+            if (ptr1) {
+                ptr1 = strstr(ptr1, ">") + 1;
+                char *ptr2 = strstr(ptr1, "<");
+                *ptr2='\0';
+                *temperature = atoi(ptr1);
+                got_it = true;
+            }
+            free(content);
+        }
+    }
+    return got_it;
+}
+
 void display(int new_mode, int value) {
     if (new_mode == DISPLAY_OFF && (display_mode != DISPLAY_OFF)) {
         //turn off
@@ -511,9 +551,9 @@ void display(int new_mode, int value) {
             }
         }
         else { //outside temperature
-            int mark = timeinfo->tm_min / 30; //update every half hour
+            int mark = timeinfo->tm_min / 5; //update every five minutes
             if (mark != last_outside_timestamp) {
-                if (frederick(&outside_temperature)) {
+                if (get_outside_temperature(&outside_temperature)) {
                     last_outside_timestamp = mark;
                 }
             }
@@ -569,15 +609,20 @@ void display(int new_mode, int value) {
     TM1637_display_str(digits);
 }
 
-//gcc -o daily daily.c TM1637.c yahoo.c -lpthread -lwiringPi -lwiringPiDev -lm -lssl -lcrypto
+//gcc -o daily daily.c TM1637.c url.c -lpthread -lwiringPi -lwiringPiDev -lm -lcurl
 int main(int argc, char *argv[]) 
 {
     launch_mode = LAUNCH_MODE_CMD_LINE;
+    api_key[0]='\0';
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp (argv[i], "-boot") == 0)
 			launch_mode = LAUNCH_MODE_ON_BOOT;
+        else
+            strcpy(api_key, argv[i]);
 	}
-    
+int t;
+get_outside_temperature(&t);    
+printf("Outside temperature %d\n", t);
 	hook_signal();
     wiringPiSetup();
     pinMode(PIN_BTN1, INPUT);
