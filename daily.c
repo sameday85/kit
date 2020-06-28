@@ -405,6 +405,10 @@ void daily_maintenance() {
     }
     if (content)
         free(content);
+    //to minutes
+    total_tv /= 60;
+    total_spellingbee /= 60;
+    total_reading /= 60;
     log_event_ex(TIMER_MAINTENANCE_, 0, total_tv, total_spellingbee, total_reading);
 }
 
