@@ -66,7 +66,7 @@
 
 #define LOG_FILE_MAX_LINE       100
 #define LOG_FILE_PATH           "/var/www/html/album/daily.html"
-#define LOG_MAINTENANCE_HOUR    2 //3am
+#define LOG_MAINTENANCE_HOUR    3 //3am
 
 #define DISPLAY_OFF             0
 #define DISPLAY_SYS_TIME        1
@@ -272,7 +272,7 @@ char *load_log_file(size_t *ptr_len) {
     return content;
 }    
 
-void log_event(int event, long long elapsed_ms) {
+void log_event_ex(int event, long long elapsed_ms, int total_tv, int total_spellingbee, int total_reading) {
     int elapsed_minutes = elapsed_ms / 1000 / 60;
     int elapsed_seconds = (elapsed_ms / 1000) % 60;
 
@@ -306,9 +306,6 @@ void log_event(int event, long long elapsed_ms) {
         strcpy(description, "Hard reset");
         break;
         case TIMER_MAINTENANCE_: {
-            int total_tv = elapsed_ms >> 16;
-            int total_spellingbee= (elapsed_ms & 0xffff) % 60;
-            int total_reading = (elapsed_ms & 0xffff) / 60;
             sprintf(description, "====TV %02d, Spellingbee %02d, Reading %02d====", total_tv, total_spellingbee, total_reading);
         }
         break;
@@ -351,6 +348,10 @@ void log_event(int event, long long elapsed_ms) {
         free (content);
 }
 
+void log_event(int event, long long elapsed_ms) {
+    log_event_ex(event, elapsed_ms, 0, 0, 0);
+}
+
 int to_int(char *ptr) {
     int value = 0;
     //not a digit
@@ -365,7 +366,7 @@ int to_int(char *ptr) {
 }
 
 void daily_maintenance() {
-    long long total_tv = 0, total_spellingbee = 0, total_reading = 0;
+    int total_tv = 0, total_spellingbee = 0, total_reading = 0;
     char *content = NULL; size_t len = 0;
     content = load_log_file (&len);
     if (content && len > 0) {  
@@ -404,11 +405,7 @@ void daily_maintenance() {
     }
     if (content)
         free(content);
-    total_tv /= 60; //to minutes, up to 32767 minutes
-    total_spellingbee /= 60; //up to 60 minutes
-    total_reading /= 60; //up to 32767/60=546 miutes
-    log_event(TIMER_MAINTENANCE_, (total_tv << 16) | (total_reading * 60 + total_spellingbee));
-    
+    log_event_ex(TIMER_MAINTENANCE_, 0, total_tv, total_spellingbee, total_reading);
 }
 
 void generate_one_key(int event) {
@@ -612,17 +609,19 @@ void display(int new_mode, int value) {
 //gcc -o daily daily.c TM1637.c url.c -lpthread -lwiringPi -lwiringPiDev -lm -lcurl
 int main(int argc, char *argv[]) 
 {
+    bool refresh_stats = false;
+    
     launch_mode = LAUNCH_MODE_CMD_LINE;
     api_key[0]='\0';
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp (argv[i], "-boot") == 0)
 			launch_mode = LAUNCH_MODE_ON_BOOT;
+		else if (strcmp (argv[i], "-stats") == 0)
+			refresh_stats = true;
         else
             strcpy(api_key, argv[i]);
 	}
-int t;
-get_outside_temperature(&t);    
-printf("Outside temperature %d\n", t);
+
 	hook_signal();
     wiringPiSetup();
     pinMode(PIN_BTN1, INPUT);
@@ -666,6 +665,9 @@ printf("Outside temperature %d\n", t);
     int counter = 0, reminder = 0, alt = 0;
     int last_maintenance_day = 0;
 
+    if (refresh_stats) {
+        daily_maintenance();
+    }
     while (!done) {
         now = get_current_time();
         int key_event = consume_one_key();
@@ -906,7 +908,7 @@ printf("Outside temperature %d\n", t);
                     int to_reminder = (now - start_at) / 1000 / REMINDER_INTERVAL;
                     if (to_reminder > 0 && reminder < to_reminder) {
                         reminder = to_reminder;
-                        turn_on_buzzer(reminder);
+                        turn_on_buzzer(reminder > 5 ? 5 : reminder);
                     }
                 }
                 break;
