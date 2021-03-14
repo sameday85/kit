@@ -54,6 +54,7 @@
 #define TIMER_STOPWATCH_STOP    8
 #define TIMER_TV_PAUSED         9
 #define TIMER_LEARNING_PAUSED   10
+#define MAX_PAUSE_DURATION      5  //minutes
 
 #define TIMER_MAINTENANCE_      98
 #define TIMER_HARD_RESET        99
@@ -64,7 +65,7 @@
 #define DURATION_BEEP           20 //seconds
 #define REMINDER_INTERVAL       300 //seconds, 5 minutes
 
-#define LOG_FILE_MAX_LINE       100
+#define LOG_FILE_MAX_LINE       300
 #define LOG_FILE_PATH           "/var/www/html/album/daily.html"
 #define LOG_MAINTENANCE_HOUR    3 //3am
 
@@ -124,6 +125,7 @@ void delay_ms(int x) {
 	    usleep(x * 1000);
 }
 
+//milliseconds
 unsigned long long get_current_time() {
     struct timeval tv;
 
@@ -664,7 +666,7 @@ int main(int argc, char *argv[])
     pthread_t thread_daemon;
     pthread_create(&thread_daemon, NULL, timer_daemon, NULL);
 
-    unsigned long long start_at, timeout_at = 0, now = 0, elapsed = 0;
+    unsigned long long start_at, timeout_at = 0, paused_at = 0, now = 0, elapsed = 0;
     unsigned long long system_idle = 0;
     int counter = 0, reminder = 0, alt = 0;
     int last_maintenance_day = 0;
@@ -710,6 +712,11 @@ int main(int argc, char *argv[])
         }
         else {
             system_idle = 0;
+        }
+        if (timer_state == TIMER_TV_PAUSED || timer_state == TIMER_LEARNING_PAUSED) {
+            if (now - paused_at >= MAX_PAUSE_DURATION * 60 * 1000) {
+                key_event = KEY_BTN1_LONG_PRESSED;
+            }
         }
         //hard reset
         if (key_event == KEY_BTN1_LONG_PRESSED || key_event == KEY_BTN2_LONG_PRESSED ||
@@ -826,6 +833,7 @@ int main(int argc, char *argv[])
                 else {
                     elapsed = now - start_at;
                     if (key_event == KEY_BTN1_PRESSED) {
+                        paused_at = now;
                         timer_state = TIMER_TV_PAUSED;
                         digitalWrite(PIN_LED_R, HIGH);
                     }
@@ -857,6 +865,7 @@ int main(int argc, char *argv[])
                 else {
                     elapsed = now - start_at;
                     if (key_event == KEY_BTN2_PRESSED) {
+                        paused_at = now;
                         timer_state = TIMER_LEARNING_PAUSED;
                         digitalWrite(PIN_LED_G, HIGH);
                     }
